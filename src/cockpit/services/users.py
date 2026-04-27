@@ -1,10 +1,14 @@
-"""User services: bcrypt hashing + admin seed.
+"""User services: bcrypt hashing + admin seed + lookup helpers.
 
-Slice A scope: just enough to seed the bootstrap admin per ADR-003 §3.
-The full user CRUD lands with UC-06.
+Originally Slice A — seed only. UC-01 adds `get_user_by_id`,
+`get_user_by_username`, and `update_last_login`. UC-09 adds
+`update_password` (also clears the must_change_password flag).
+The full admin user CRUD lands with UC-06.
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import bcrypt
 from sqlalchemy.orm import Session
@@ -52,3 +56,33 @@ def seed_admin(
     session.add(user)
     session.flush()
     return user
+
+
+def get_user_by_id(session: Session, user_id: int) -> User | None:
+    return session.query(User).filter_by(id=user_id).first()
+
+
+def get_user_by_username(session: Session, username: str) -> User | None:
+    return session.query(User).filter_by(username=username).first()
+
+
+def update_last_login(session: Session, user: User) -> None:
+    user.last_login_at = datetime.now(timezone.utc)
+    session.flush()
+
+
+def update_password(
+    session: Session,
+    user: User,
+    new_password: str,
+    *,
+    bcrypt_cost: int = 12,
+) -> None:
+    """UC-09 helper: hash, store, clear `must_change_password`, stamp
+    `password_changed_at`. Doesn't write `login_audit` — the router does that
+    so the source IP and action discriminator are bound to the request.
+    """
+    user.pw_hash = hash_password(new_password, cost=bcrypt_cost)
+    user.must_change_password = 0
+    user.password_changed_at = datetime.now(timezone.utc)
+    session.flush()
