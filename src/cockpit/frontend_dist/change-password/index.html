@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Change password — LLM Cockpit</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 420px; margin: 4rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+    p.lede { color: #555; margin-top: 0; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 600; }
+    input { width: 100%; padding: 0.5rem; box-sizing: border-box; border: 1px solid #999; border-radius: 4px; font: inherit; }
+    button { margin-top: 1.25rem; padding: 0.6rem 1rem; width: 100%; cursor: pointer; border: 0; border-radius: 4px; background: #222; color: #fff; font: inherit; }
+    button[disabled] { opacity: 0.5; cursor: wait; }
+    .err { color: #b00020; margin-top: 1rem; min-height: 1.25rem; }
+    p.note { color: #555; font-size: 0.875rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>Change your password</h1>
+  <p class="lede">You must set a new password before you can use the cockpit.</p>
+  <form id="change">
+    <label for="new_password">New password</label>
+    <input id="new_password" name="new_password" type="password" autocomplete="new-password" required minlength="8" autofocus>
+    <label for="confirm_password">Confirm new password</label>
+    <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" required minlength="8">
+    <button id="submit" type="submit">Update password</button>
+    <div class="err" id="err" role="alert" aria-live="polite"></div>
+  </form>
+  <p class="note">Sprint 2 placeholder UI. Sprint 4 replaces this with the real Next.js shell.</p>
+  <script>
+    const form = document.getElementById('change');
+    const errEl = document.getElementById('err');
+    const submitBtn = document.getElementById('submit');
+
+    const messages = {
+      passwords_dont_match: 'The two passwords do not match.',
+      too_short: 'Password must be at least 8 characters.',
+      cannot_reuse_default: 'You cannot reuse the default password "ollama".',
+    };
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errEl.textContent = '';
+      submitBtn.disabled = true;
+      const new_password = document.getElementById('new_password').value;
+      const confirm_password = document.getElementById('confirm_password').value;
+
+      if (new_password !== confirm_password) {
+        errEl.textContent = messages.passwords_dont_match;
+        submitBtn.disabled = false;
+        return;
+      }
+
+      try {
+        const r = await fetch('/api/auth/change-password', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ new_password, confirm_password }),
+        });
+        if (r.status === 200) {
+          window.location.replace('/dashboard/');
+        } else if (r.status === 401) {
+          window.location.replace('/login/');
+        } else {
+          let detail = 'unknown_error';
+          try { detail = (await r.json()).detail || detail; } catch (_e) {}
+          errEl.textContent = messages[detail] || ('Error: ' + detail);
+        }
+      } catch (_e) {
+        errEl.textContent = 'Network error.';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

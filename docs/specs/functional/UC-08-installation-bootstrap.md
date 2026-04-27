@@ -1,7 +1,9 @@
-<!-- Status: Accepted | Version: 1.0 | Created: 2026-04-27 | Updated: 2026-04-27 -->
+<!-- Status: Done (technical) | Version: 1.0 | Created: 2026-04-27 | Updated: 2026-04-28 -->
 # UC-08 · Functional Spec — First-run installation + bootstrap
 
-**Status:** Accepted
+**Status:** Done (technical)
+<!-- VAULT-SYNC: Slice A merged on 2026-04-28 (#1). Slice B (serve + main.py app factory + four placeholder HTML files + cmd_serve + frontend_assets graduated to a hard doctor check) lands on feature/sprint2-mvp. Status flipped Accepted → In Progress → Done (technical). Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off. -->
+
 **Depends on:** ADR-002 v1.1 (pip + CLI), ADR-003 (single admin seed, co-located default), UC-07 (Ollama integration probe).
 **User Spec:** [`../../use-cases/UC-08-installation-bootstrap.md`](../../use-cases/UC-08-installation-bootstrap.md)
 **Test Spec:** [`../test/UC-08-installation-bootstrap.md`](../test/UC-08-installation-bootstrap.md)

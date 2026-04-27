@@ -79,6 +79,53 @@ class Settings(BaseSettings):
     def db_url(self) -> str:
         return f"sqlite:///{self.db_path}"
 
+    @classmethod
+    def from_toml(cls, path: Path) -> Settings:
+        """Build a `Settings` from a `config.toml` written by `cockpit-admin init`.
+
+        Per the resolution order in this module's docstring, env vars still
+        win over the TOML values — pydantic-settings handles that automatically
+        because we pass the TOML values as constructor kwargs and env reads run
+        afterwards inside `BaseSettings`.
+        """
+        import tomllib
+
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+
+        kwargs: dict = {}
+        if "server" in data:
+            srv = data["server"]
+            if "host" in srv:
+                kwargs["host"] = srv["host"]
+            if "port" in srv:
+                kwargs["port"] = srv["port"]
+        if "ollama" in data and "url" in data["ollama"]:
+            kwargs["ollama_url"] = data["ollama"]["url"]
+        if "security" in data:
+            sec = data["security"]
+            if "jwt_secret" in sec:
+                kwargs["jwt_secret"] = sec["jwt_secret"]
+            if "session_days" in sec:
+                kwargs["session_days"] = sec["session_days"]
+            if "bcrypt_cost" in sec:
+                kwargs["bcrypt_cost"] = sec["bcrypt_cost"]
+        if "telemetry" in data:
+            tel = data["telemetry"]
+            if "nvidia_smi_path" in tel:
+                kwargs["nvidia_smi_path"] = tel["nvidia_smi_path"]
+            if "sample_interval_s" in tel:
+                kwargs["sample_interval_s"] = tel["sample_interval_s"]
+        if "paths" in data:
+            paths = data["paths"]
+            if "data_dir" in paths and paths["data_dir"]:
+                kwargs["data_dir"] = Path(paths["data_dir"])
+            if "db_file" in paths:
+                kwargs["db_file"] = paths["db_file"]
+            if "log_file" in paths:
+                kwargs["log_file"] = paths["log_file"]
+        return cls(**kwargs)
+
 
 @dataclass
 class TomlConfig:
