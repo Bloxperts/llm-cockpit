@@ -6,7 +6,9 @@ ADRs capture architectural decisions made for the cockpit. Format follows the li
 | ADR | Title | Status | Supersedes |
 |-----|-------|--------|------------|
 | [ADR-001](ADR-001-mirror-agentic-blox-process.md) | Mirror AgenticBlox process v2.0 with cockpit deltas | Accepted | — |
-| [ADR-002](ADR-002-stack-choices-and-delivery-form.md) | Stack choices and delivery form (FastAPI + Next.js + SQLite + SSE) | Accepted | — |
+| [ADR-002](ADR-002-stack-choices-and-delivery-form.md) | Stack choices and delivery form (FastAPI + Next.js + SQLite + SSE) | Accepted (v1.1) | — |
+| [ADR-003](ADR-003-public-release-framing.md) | Public release framing (Ollama-only, pip + CLI, single admin seed) | Accepted | parts of ADR-002 §Stack (scheduler client) |
+| [ADR-004](ADR-004-role-ladder.md) | Role ladder + permission model (chat / code / admin) | Accepted | — |
 
 ## How an ADR is Accepted
 

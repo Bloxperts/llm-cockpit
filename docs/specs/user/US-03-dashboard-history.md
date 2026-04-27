@@ -1,31 +1,43 @@
-<!-- Status: Draft | Version: 0.1 | Created: 2026-04-27 -->
-# US-03-dashboard-history · User Spec — Dashboard history (24 h, 7 d)
+<!-- Status: Review | Version: 0.2 | Created: 2026-04-27 | Updated: 2026-04-27 -->
+# US-03 · User Spec — Dashboard history (24 h, 7 d)
 
-**Status:** Draft
+**Status:** Review
 **Owner:** Chris
 **Functional Spec:** [`functional/US-03-dashboard-history.md`](../functional/US-03-dashboard-history.md)
 **Test Spec:** [`test/US-03-dashboard-history.md`](../test/US-03-dashboard-history.md)
+**Sprint:** 5
+**Depends on:** US-02 (uses the same metrics tables).
 
 ## Story
 
-> As the operator I want to see historical metrics over 24 h and 7 d so that I can reason about trends and capacity.
+> As an `admin` I want to see how the cockpit / Ollama have behaved over the last 24 hours and last 7 days so that I can reason about capacity, spot patterns, and explain "why was it slow yesterday" without diving into raw logs.
+>
+> As a `chat` or `code` user I want to see my own usage history (messages I sent, models I used, total tokens) over the last 24 h / 7 d so that I have a sense of my own consumption.
 
-## Problem / current situation
+## Target state
 
-(to be filled in when this story is pulled into a sprint)
+`/dashboard/history` shows two sections:
 
-## Target state from the user's perspective
+- **System-wide** (admin only). Stacked bar chart of calls per model per hour for last 24 h and per day for last 7 d. Line chart of GPU temp p50 / p95 over last 24 h (when telemetry available). Top-5 models by total tokens, last 7 d.
+- **Per-user** (everyone). Their own messages-sent count by day for last 7 d, total prompt + completion tokens, mean latency.
 
-(to be filled in)
+Time-range toggle: `24 h` / `7 d`. Default: `24 h`.
 
 ## Acceptance criteria
 
-(extract from the existing Functional Spec when this story enters Review; ACs in the Functional Spec are the seed.)
+1. Page loads in &lt; 1 s with both charts rendered (data already aggregated server-side).
+2. `chat` / `code` users see only their own usage panel; `admin` sees system-wide *and* their own panel.
+3. When telemetry is absent, the GPU temp line chart renders an empty state with the same "No GPU telemetry detected" message as US-02.
+4. Aggregations are computed in SQLite, not in the browser. The browser receives ready-to-render arrays.
+5. The page refreshes its data on demand via a "Refresh" button — no polling. (Historical data does not need live tail.)
 
 ## Scope boundaries (out)
 
-See cockpit `GOALS.md` §non-goals and §anti-goals.
+- Drill-down into a specific call → message body. v0.2.
+- Cost views. v0.2.
+- Export to CSV / Markdown. v0.2.
 
 ## Notes
 
-Page: `/dashboard`. Functional spec already has the technical detail; this User Spec is a Draft until the story is pulled into a sprint and the AC list has been validated with Chris.
+- Pure read story, no boundary crossings. **No DG-004 block needed** unless v0.2 introduces an external store.
+- Aggregation queries are written as plain SQL views in the migration that creates `messages` / `metrics_snapshot`.

@@ -1,103 +1,102 @@
 # llm-cockpit
 
-A local dashboard + chat UI for the Neuroforge 2.0 LLM serving stack.
+A local-first, multi-user web interface for [Ollama](https://ollama.com): a dashboard for what's loaded and how it's behaving, plus a Claude-shaped chat / code UI you can `pip install` and have running in five minutes.
 
-> **Source of truth for design:** the obsidian vault under `020 Projects/LLM-Cockpit/`.
-> This repository holds the implementation; design docs live in the vault.
-
-## What this is
-
-Two pages backed by one FastAPI service running on Neuroforge:
-
-1. **Dashboard** — live + historical observability for the Ollama / vLLM serving stack: loaded models, GPU temps and VRAM, scheduler queue stats, per-call token distributions.
-2. **Chat / Code** — Claude-shaped UI for direct conversations with `gemma4:26b`, `qwen3-coder:30b`, and on-demand `deepseek-r1:32b` / `qwen2.5-72B-AWQ`. Multi-user with simple bcrypt password login.
-
-Both pages route every LLM call through the existing queue layer (`scheduler` on port 8001) so single-flight semantics for heavy slots are enforced uniformly.
+The cockpit assumes you already have Ollama running. It does not install, manage, or supervise Ollama — it talks to it.
 
 ## Status
 
-**v0.1 — scaffolding.** Specs Accepted in vault are gradually being implemented. See `docs/STATUS.md` for what works and what doesn't.
+**v0.1 — design phase.** Sprint 0 (methodology bootstrap) and Sprint 1 (architecture) are landing now. Sprint 2 begins implementation: installation, login, first-login password change. See `docs/process/SPRINT_STATE.md` and `docs/STATUS.md`.
 
-## Quick start (development on a Mac)
+## What it does
 
-```bash
-# clone
-git clone git@github.com:Bloxperts/llm-cockpit.git
-cd llm-cockpit
+- **Dashboard.** What models Ollama is serving and which are currently loaded, recent calls with token counts and latency, optional GPU panel (when `nvidia-smi` is on PATH), Ollama-reachability badge.
+- **Chat.** Pick any chat-tagged model from your Ollama install and have a streaming conversation. Per-user history, per-conversation system prompt, code-block highlighting.
+- **Code.** Same shell as Chat, filtered to code-tagged models, with a coder-default system prompt and diff rendering.
+- **Admin (user management).** Add / delete users, set roles on a `chat < code < admin` ladder, reset passwords. Force first-login password change for any seeded or admin-created account.
+- **Admin (Ollama configuration).** Tag models `chat` / `code` / `both`, pull / delete models, edit the code-mode default system prompt, see per-model metrics + the audit log.
 
-# backend
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
-
-# frontend (separate terminal)
-cd ../frontend
-npm install
-npm run dev      # http://localhost:3000 in dev, talks to backend on 8080
-```
-
-## Quick start (production on Neuroforge)
+## Quick start (when v0.1 ships)
 
 ```bash
-# on Neuroforge:
-git clone git@github.com:Bloxperts/llm-cockpit.git ~/llm-cockpit
-cd ~/llm-cockpit
-./scripts/install.sh    # creates .venv, installs, builds frontend, sets up systemd-user units
-systemctl --user start llm-cockpit
-# UI at http://192.168.111.200:8080
+# 1. Have Ollama running (https://ollama.com/download)
+ollama serve   # or: systemctl --user start ollama
+
+# 2. Install the cockpit
+pipx install llm-cockpit          # or: pip install llm-cockpit (in a venv)
+
+# 3. Bootstrap (probes Ollama, creates admin / ollama, sets must_change_password)
+cockpit-admin init
+
+# 4. Run
+cockpit-admin serve
+
+# 5. Open http://localhost:8080  → log in as admin / ollama → change password → use.
 ```
+
+Other supported shapes:
+
+- `docker compose up -d` from the published `compose.yml`.
+- `cockpit-admin systemd-install` on Linux for a `~/.config/systemd/user/llm-cockpit.service` unit.
+
+## Roles (ADR-004)
+
+Each user has one role on a ladder. Higher roles include lower-rung capabilities.
+
+| Role | What it can do |
+|------|----------------|
+| `chat` | Log in, chat with chat-tagged models, see own conversations, change own password. |
+| `code` | Above + code with code-tagged models, see own code conversations. |
+| `admin` | Above + manage users, configure Ollama (tags, pull/delete, defaults), see system-wide metrics + audit log. |
+
+Bootstrap seeds one user: `admin` / `ollama` with a forced password change on first login.
 
 ## Repo layout
 
 ```
-backend/                   FastAPI (Python 3.12)
-  app/
-    main.py                lifecycle + routers
-    auth.py                bcrypt + JWT
-    db.py                  SQLite engine
-    models.py              SQLAlchemy ORM
-    schemas.py             Pydantic
-    scheduler_client.py    talks to scheduler:8001
-    ollama_client.py       talks to ollama:11434 (admin only)
-    telemetry.py           nvidia-smi sampler
-    routers/
-      auth.py
-      dashboard.py
-      chat.py
-      code.py
-      admin.py
-  cli.py                   cockpit-admin CLI
-  pyproject.toml
-frontend/                  Next.js (App Router) + shadcn
-  app/
-    (auth)/login/
-    (app)/dashboard/
-    (app)/chat/
-    (app)/code/
-    (app)/admin/
-    layout.tsx
-  lib/
-    api.ts
-    sse.ts
-  components/
-    ui/                    shadcn drop-in
-    chart/
-    chat/
-docs/
-  STATUS.md
-  CONTRIBUTING.md
-scripts/
-  install.sh               first-run setup on Neuroforge
-.env.example
-docker-compose.yml         optional alternative to systemd
+src/cockpit/                 Python package (planned shape per ADR-002 v1.1)
+├── cli.py                   cockpit-admin entry point
+├── main.py                  FastAPI app
+├── routers/                 auth, dashboard, chat, code, admin_users, admin_ollama
+├── services/                users, model_tags, metrics, audit, settings
+├── ports/                   LLMChat, Telemetry        (hexagonal)
+├── adapters/                ollama_chat, telemetry, fake_chat, fake_telemetry
+├── models.py / schemas.py
+├── migrations/              alembic
+├── frontend_dist/           built Next.js static export, bundled at wheel-build time
+└── default_config/          model_tag_heuristics.yaml, code_default_system_prompt.md
+docs/                        mirror of the vault subset (synced at sprint review)
+├── PROCESS.md, SPRINT_STATE.md
+├── decisions/               ADR-001..004
+├── design-principles/       DP-INDEX (inherits from AgenticBlox)
+├── specs/{user,functional,test}/  US-01..US-10
+├── architecture/COMPONENTS.md
+└── STATUS.md
+scripts/sync-docs-from-vault.sh
 ```
+
+## Documentation
+
+| Where | What |
+|-------|------|
+| `docs/PROCESS.md` | Spec-First + 1-week-sprint discipline. |
+| `docs/architecture/COMPONENTS.md` | Component map + the two ports (`LLMChat`, `Telemetry`). |
+| `docs/decisions/` | ADRs. ADR-001 process; ADR-002 stack; ADR-003 public framing; ADR-004 role ladder. |
+| `docs/design-principles/DP-INDEX.md` | Which AgenticBlox DPs we adopt, defer, or skip. |
+| `docs/specs/` | One folder per spec type (user / functional / test). |
 
 ## Process
 
-This repo follows the same `Draft → Review → Accepted → Deploy → Archived` discipline as `agentic-blox`. Specs in the vault must be `Accepted` before code lands here. ADRs go in the vault under `decisions/`.
+Vault is the source of truth (DP-024); `docs/` is the mirror, updated at sprint review by `scripts/sync-docs-from-vault.sh`.
+
+Status flow `Draft → Review → Accepted → In Progress → Done → User Accepted`. Implementation only starts on a Functional Spec at status `Accepted`. `Review→Accepted` and `Done→User Accepted` always require explicit owner approval.
+
+Branches: `feature/US-NN-short-title` → `develop` → `main`. Commit prefix: `[US-NN] short description`.
 
 ## License
 
-Private. Bloxperts internal use only for now.
+To be decided before public release. Currently private (Bloxperts internal during pre-release).
+
+## Project home
+
+This repo is the implementation. The design source-of-truth is the project hub in the Obsidian vault at `020 Projects/LLM-Cockpit/`.

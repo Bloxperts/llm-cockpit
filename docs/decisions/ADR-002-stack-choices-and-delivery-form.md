@@ -1,9 +1,10 @@
-<!-- Status: Accepted | Version: 1.0 | Created: 2026-04-27 -->
+<!-- Status: Accepted | Version: 1.1 | Created: 2026-04-27 | Updated: 2026-04-27 -->
 # ADR-002 · Stack choices and delivery form
 
 **Status:** Accepted
+**Version:** 1.1
 **Date:** 2026-04-27
-**Supersedes:** —
+**Superseded in part by:** ADR-003 §4 (drops the scheduler client) and §1 (adds pip + CLI delivery vehicle).
 
 ## Context
 
@@ -35,8 +36,10 @@ DG-003 was implicitly run when Chris scoped the project (cockpit GOALS.md §prim
 | Charts | Recharts | DP-028; sufficient for the dashboard scope. |
 | Streaming | Server-Sent Events (SSE) over `EventSource` | DP-028; one-way streaming is exactly what chat tokens need; simpler than WebSockets. |
 | State (frontend) | TanStack Query for server state, Zustand for UI state | DP-028; minimal footprint. |
-| Process supervision | `systemd-user` units on Neuroforge | DP-028; same model AgenticBlox uses for `scheduler` and `ollama-warmup`. |
-| Deploy | `scripts/install.sh` first-run + `git pull && systemctl --user restart` for updates | DP-007; matches the AgenticBlox-on-Neuroforge convention. |
+| **Distribution (v1.1)** | **Pip-installable wheel `llm-cockpit` containing the FastAPI app + bundled Next.js static build, plus a `cockpit-admin` CLI entry-point.** | **DP-028; ADR-003 §1.** The frontend is built at wheel-build time and served by FastAPI's static-file mount — one process, one port. |
+| **CLI (v1.1)** | **`cockpit-admin {init, serve, user-add, user-set-password, user-set-role, user-delete, user-list, migrate}`.** | DP-007; gives headless installs and CI a non-UI path. |
+| Process supervision | systemd-user unit (Linux), Docker Compose (cross-platform), or plain `cockpit-admin serve` for dev. | DP-028. |
+| Deploy | `pip install --upgrade llm-cockpit` (or rebuild the Docker image). Migrations run automatically on `cockpit-admin serve` startup. | DP-007. |
 
 ### Repository topology
 
@@ -58,6 +61,7 @@ DG-003 was implicitly run when Chris scoped the project (cockpit GOALS.md §prim
 - Locking SQLite limits horizontal scaling. Mitigated: cockpit GOALS §non-goals exclude multi-host. Migration to Postgres is an ADR if/when required.
 - SSE is one-way. If we ever need bidirectional (e.g. live cursor presence), we'll add WebSockets as a second adapter — not replace SSE.
 - Single repo couples docs and code. Mitigated by the per-folder PR template and CONTRIBUTING rules.
+- **(v1.1)** Bundling the frontend into the Python wheel adds a build step (`npm run build && next export` or `npm run build` with the standalone output). This is well-trodden but requires CI to have Node available alongside Python. Sprint 1 architecture work owns the exact build recipe.
 
 **Neutral**
 
@@ -81,3 +85,8 @@ DG-003 was implicitly run when Chris scoped the project (cockpit GOALS.md §prim
 > - **Agent** — rejected per cockpit GOALS §anti-goals ("No agent flows in v0.1").
 >
 > Verdict: **service (web)**. Verdict-bound DGs that follow (DG-001, DG-002): not run, because the form is not "agent". DG-004 runs per spec on outbound ports.
+
+## Revision history
+
+- **v1.1 (2026-04-27)** — Distribution row added: pip-installable wheel + bundled Next.js + `cockpit-admin` CLI. Process supervision and Deploy rows updated to reflect that. Per ADR-003, the scheduler client referenced in this ADR's earlier text is dropped from v0.1 (`OllamaLLMChat` is the only `LLMChat` adapter).
+- **v1.0 (2026-04-27)** — Initial Accepted version. Locked the FastAPI / Next.js / SQLite / SSE stack, recorded the DG-003 verdict (web service).

@@ -7,22 +7,48 @@ Per PROCESS §3 / ADR-001, every User Story has three artefacts:
 - `functional/US-NN-short-title.md` — Functional Specification (how the system delivers it).
 - `test/US-NN-short-title.md` — Test Specification (how it is verified).
 
-| US | Title | Page | User | Functional | Test | Sprint |
-|----|-------|------|------|------------|------|--------|
-| US-01 | Family member logs in to the cockpit | login | [user](user/US-01-login.md) | [functional](functional/US-01-login.md) | [test](test/US-01-login.md) | 1 |
-| US-02 | Operator sees live model + GPU + queue state | dashboard | [user](user/US-02-dashboard-live.md) | [functional](functional/US-02-dashboard-live.md) | [test](test/US-02-dashboard-live.md) | 2 |
-| US-03 | Operator sees historical metrics (24 h, 7 d) | dashboard | [user](user/US-03-dashboard-history.md) | [functional](functional/US-03-dashboard-history.md) | [test](test/US-03-dashboard-history.md) | 6 |
-| US-04 | User chats with the local orchestrator (gemma4:26b) | chat | [user](user/US-04-chat-page.md) | [functional](functional/US-04-chat-page.md) | [test](test/US-04-chat-page.md) | 4 |
-| US-05 | User uses the coder model (qwen3-coder:30b) | code | [user](user/US-05-code-page.md) | [functional](functional/US-05-code-page.md) | [test](test/US-05-code-page.md) | 5 |
-| US-06 | Admin pins/unpins models, adjusts num_ctx | admin | [user](user/US-06-admin-controls.md) | [functional](functional/US-06-admin-controls.md) | [test](test/US-06-admin-controls.md) | 7 |
-| US-07 | All chat / code calls go through the scheduler queue | infra | [user](user/US-07-scheduler-routing.md) | [functional](functional/US-07-scheduler-routing.md) | [test](test/US-07-scheduler-routing.md) | 3 |
+| US | Title | Min role | Sprint | User | Functional | Test |
+|----|-------|----------|--------|------|------------|------|
+| US-01 | User logs in to the cockpit | any | 2 | [user](user/US-01-login.md) — Review | [functional](functional/US-01-login.md) — Review | [test](test/US-01-login.md) — Review |
+| US-02 | Live dashboard (Ollama + optional GPU) | any (filtered by role) | 3 | [user](user/US-02-dashboard-live.md) — Review | [functional](functional/US-02-dashboard-live.md) — Review | [test](test/US-02-dashboard-live.md) — Draft |
+| US-03 | Dashboard history (24 h, 7 d) | any (filtered by role) | 5 | [user](user/US-03-dashboard-history.md) — Review | [functional](functional/US-03-dashboard-history.md) — Review | [test](test/US-03-dashboard-history.md) — Draft |
+| US-04 | Chat interface (chat-tagged models) | `chat` | 4 | [user](user/US-04-chat-page.md) — Review | [functional](functional/US-04-chat-page.md) — Review | [test](test/US-04-chat-page.md) — Draft |
+| US-05 | Code interface (code-tagged models) | `code` | 4 | [user](user/US-05-code-page.md) — Review | [functional](functional/US-05-code-page.md) — Review | [test](test/US-05-code-page.md) — Draft |
+| US-06 | Admin: User management | `admin` | 6 | [user](user/US-06-admin-controls.md) — Review | [functional](functional/US-06-admin-controls.md) — Review | [test](test/US-06-admin-controls.md) — Draft |
+| US-07 | Ollama integration (`LLMChat` port) | infra | 1 (design) → 2 (build) | [user](user/US-07-scheduler-routing.md) — Review | [functional](functional/US-07-scheduler-routing.md) — Review | [test](test/US-07-scheduler-routing.md) — Draft |
+| US-08 | First-run installation + bootstrap | n/a (pre-user) | 2 | [user](user/US-08-installation-bootstrap.md) — Review | [functional](functional/US-08-installation-bootstrap.md) — Review | [test](test/US-08-installation-bootstrap.md) — Review |
+| US-09 | First-login forced password change | any | 2 | [user](user/US-09-first-login-password-change.md) — Review | [functional](functional/US-09-first-login-password-change.md) — Review | [test](test/US-09-first-login-password-change.md) — Review |
+| US-10 | Admin: Ollama configuration + metrics | `admin` | 7 | [user](user/US-10-ollama-configuration.md) — Review | [functional](functional/US-10-ollama-configuration.md) — Review | [test](test/US-10-ollama-configuration.md) — Draft |
+
+## Filename note
+
+US-06 (`admin-controls`) and US-07 (`scheduler-routing`) keep their original filenames for stability. The titles inside have changed to "User management" (US-06, per ADR-003 §6) and "Ollama integration" (US-07, per ADR-003 §4). Filename rename is a possible v0.2 cleanup.
 
 ## Status legend
 
-`Draft → Review → Accepted → In Progress → Done → User Accepted` (PROCESS §2).
+`Draft → Review → Accepted → In Progress → Done → User Accepted` (PROCESS §2). Implementation may not begin until the **Functional Spec** is `Accepted`.
 
-Each spec carries its own status header. Implementation may not begin until the **Functional Spec** is `Accepted`.
+## Decision Guide bindings
 
-## DG-004 binding
+DG-004 (port or adapter) is **binding** on:
 
-The Functional Spec for US-02, US-06, and US-07 must include a filled-in DG-004 (port or adapter) block — they all cross the platform boundary to the scheduler, Ollama, or `nvidia-smi`. See ADR-001 §4.
+- **US-02** — `Telemetry` and `LLMChat` ports.
+- **US-07** — `LLMChat` port (the canonical block).
+- **US-10** — extends `LLMChat` with `pull_model` / `delete_model`.
+
+US-04 / US-05 inherit US-07's block (no new boundary surface). US-01 / US-03 / US-06 / US-08 / US-09 do not cross the platform boundary in v0.1 — DG-004 is N/A.
+
+DG-001 / DG-002 / DG-003 do not apply (no agents; delivery form locked once in ADR-002).
+
+## Min-role table
+
+Role gating per ADR-004:
+
+| Min role | Stories |
+|----------|---------|
+| any (logged in) | US-01, US-02 (filtered view), US-03 (filtered view), US-09 |
+| `chat` | US-04 |
+| `code` | US-05 |
+| `admin` | US-06, US-10 |
+| infra (no user) | US-07 |
+| n/a (pre-user) | US-08 |
