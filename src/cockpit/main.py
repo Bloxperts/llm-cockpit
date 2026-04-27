@@ -13,16 +13,16 @@ Per UC-08 functional spec §serve flow:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session, sessionmaker
 
 from cockpit.config import Settings
 from cockpit.db import make_engine, make_session_factory, upgrade_to_head
+from cockpit.deps import get_session, get_settings
 from cockpit.ports.llm_chat import LLMChat, OllamaResponseError, OllamaUnreachableError
 from cockpit.routers import auth as auth_router
 
@@ -100,6 +100,7 @@ def create_app(
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.rate_limiter = auth_router.RateLimiter()
 
     app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 
@@ -123,21 +124,8 @@ def create_app(
     return app
 
 
-def get_session(request: Request) -> Iterator[Session]:
-    """FastAPI dependency: yield a SQLAlchemy session bound to the app's engine."""
-    factory: sessionmaker[Session] = request.app.state.session_factory
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-def get_settings(request: Request) -> Settings:
-    return request.app.state.settings
-
-
-# Re-exports so other modules don't reach into app.state directly.
+# Re-export the dependency providers so callers can keep importing from
+# `cockpit.main` if they want; the canonical home is `cockpit.deps`.
 __all__ = [
     "create_app",
     "get_session",
