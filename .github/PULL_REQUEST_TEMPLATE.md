@@ -1,21 +1,21 @@
-<!-- Required prefix in title: [US-NN] short description -->
+<!-- Required prefix in title: [UC-NN] short description -->
 
 ## What this PR does
 
 (one-paragraph summary of the change)
 
-## User Story
+## Use Case
 
-- **US:** US-NN — `<title>`
-- **Vault User Spec:** `020 Projects/LLM-Cockpit/specs/user/US-NN-…md` — status: …
-- **Vault Functional Spec:** `020 Projects/LLM-Cockpit/specs/functional/US-NN-…md` — status: **must be Accepted**
-- **Vault Test Spec:** `020 Projects/LLM-Cockpit/specs/test/US-NN-…md` — status: …
+- **UC:** UC-NN — `<title>`
+- **Vault Use Case:** `020 Projects/LLM-Cockpit/use-cases/UC-NN-…md` — status: …
+- **Vault Functional Spec:** `020 Projects/LLM-Cockpit/specs/functional/UC-NN-…md` — status: **must be Accepted**
+- **Vault Test Spec:** `020 Projects/LLM-Cockpit/specs/test/UC-NN-…md` — status: …
 
 ## Process checklist
 
-- [ ] Title contains `[US-NN]`.
+- [ ] Title contains `[UC-NN]`.
 - [ ] Functional Spec in the vault is `Accepted`.
-- [ ] DG-004 (port or adapter) block present in the Functional Spec **iff** this PR crosses the platform boundary (scheduler / Ollama / vLLM / `nvidia-smi`). N/A is also a valid answer — say which.
+- [ ] DG-004 (port or adapter) block present in the Functional Spec **iff** this PR crosses the platform boundary (Ollama / `nvidia-smi`). N/A is also a valid answer — say which.
 - [ ] Test Spec's automated cases are present in this PR.
 - [ ] `pytest` (backend) and `npm test` (frontend, if touched) pass locally.
 - [ ] DP-002 — every state-changing action emits a JSONL audit line.
@@ -24,7 +24,7 @@
 
 ## Branch sanity
 
-- [ ] Branch name is `feature/US-NN-short-title`.
+- [ ] Branch name is `feature/UC-NN-short-title` (or a `[chore]`/`[ci]`/`[docs]` branch).
 - [ ] Target branch is `develop` (not `main`).
 
 ## Reviewer notes

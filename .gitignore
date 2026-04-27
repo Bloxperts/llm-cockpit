@@ -48,3 +48,4 @@ backend/htmlcov
 # Secrets
 secrets/
 *.pem
+.claude/
