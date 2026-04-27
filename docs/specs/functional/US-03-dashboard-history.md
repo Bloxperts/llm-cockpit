@@ -1,6 +1,11 @@
-# SPEC-003 · Dashboard historical view
+<!-- Status: Draft | Version: 0.1 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+# US-03 · Functional Spec — Dashboard historical view
 
-**US:** US-03 — Operator sees historical metrics (24 h, 7 d). **Status:** Draft **Depends on:** SPEC-002.
+**Status:** Draft
+**Depends on:** US-02 (live dashboard, shares the metrics tables).
+**User Spec:** [`../user/US-03-dashboard-history.md`](../user/US-03-dashboard-history.md)
+**Test Spec:** [`../test/US-03-dashboard-history.md`](../test/US-03-dashboard-history.md)
+**Bound DG:** none expected (reads from local `metrics_snapshot` and `messages` tables only); revisit if any external store is added.
 
 ## Goal
 

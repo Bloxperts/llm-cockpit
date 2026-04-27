@@ -1,6 +1,11 @@
-# SPEC-004 · Chat page
+<!-- Status: Draft | Version: 0.1 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+# US-04 · Functional Spec — Chat page
 
-**US:** US-04 — User chats with the local orchestrator (gemma4:26b). **Status:** Draft **Depends on:** SPEC-001 (login), SPEC-007 (scheduler routing).
+**Status:** Draft
+**Depends on:** US-01 (login), US-07 (scheduler routing).
+**User Spec:** [`../user/US-04-chat-page.md`](../user/US-04-chat-page.md)
+**Test Spec:** [`../test/US-04-chat-page.md`](../test/US-04-chat-page.md)
+**Bound DG:** DG-004 — chat traffic crosses the boundary via the `LLMChat` port covered by US-07's DG-004 block. This spec inherits that block; if a *new* boundary surface is added (e.g. a second LLM provider direct from the chat router), DG-004 must be re-run here.
 
 ## Goal
 

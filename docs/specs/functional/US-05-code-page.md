@@ -1,6 +1,11 @@
-# SPEC-005 · Code page
+<!-- Status: Draft | Version: 0.1 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+# US-05 · Functional Spec — Code page
 
-**US:** US-05 — User uses the coder model for code work. **Status:** Draft **Depends on:** SPEC-004 (chat page — same machinery).
+**Status:** Draft
+**Depends on:** US-04 (chat page — same machinery).
+**User Spec:** [`../user/US-05-code-page.md`](../user/US-05-code-page.md)
+**Test Spec:** [`../test/US-05-code-page.md`](../test/US-05-code-page.md)
+**Bound DG:** DG-004 — same as US-04 (inherits the `LLMChat` port from US-07). No new boundary surface introduced.
 
 ## Goal
 

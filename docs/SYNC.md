@@ -4,7 +4,7 @@
 | Field | Value |
 |---|---|
 | Source | `/sessions/elegant-optimistic-cori/mnt/obsidian-vault/020 Projects/LLM-Cockpit` |
-| Synced at (UTC) | 2026-04-27T07:57:08Z |
+| Synced at (UTC) | 2026-04-27T07:59:32Z |
 | Synced by | elegant-optimistic-cori@claude |
 | Source HEAD (vault is not git, so this stays empty) | — |
 
