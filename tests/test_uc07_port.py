@@ -837,21 +837,166 @@ def test_run_init_threads_chat_factory_through(tmp_path: Path) -> None:
     assert result.tagged == {"gemma3:27b": "chat", "qwen3-coder:30b": "code"}
 
 
-# --- chat_stream NDJSON wire-shape pinning — deferred ---------------------
+# --- chat_stream NDJSON wire-shape pinning (resolved in UC-04) ------------
+#
+# Captured against Ollama 0.1.x. Mutating any pinned key (rename / drop)
+# must fail the parse — that's the contract. UC-04's chat router and
+# UC-05's code router both depend on these keys (the cockpit reads
+# usage_in / usage_out / gen_tps / latency_ms off the final chunk).
 
 
-class TestChatStreamWireShapePending:
-    """Placeholder for the chat_stream NDJSON contract test.
+# Mid-stream chunk: minimal keys the parser dereferences.
+GOLDEN_CHAT_STREAM_NON_DONE = {
+    "model": "gemma3:27b",
+    "created_at": "2026-04-28T00:00:00Z",
+    "message": {"role": "assistant", "content": "Hello"},
+    "done": False,
+}
 
-    Pinning the keys (`prompt_eval_count`, `eval_count`, `prompt_eval_duration`,
-    `eval_duration`, `total_duration`) is deferred to the slice that wires
-    chat_stream into the chat router (UC-04). Pinning shapes for code that
-    isn't read in any router yet is theatre; we'd be testing the parser
-    against itself.
+# Final chunk: usage and duration fields land here.
+GOLDEN_CHAT_STREAM_FINAL = {
+    "model": "gemma3:27b",
+    "created_at": "2026-04-28T00:00:01Z",
+    "message": {"role": "assistant", "content": ""},
+    "done": True,
+    "prompt_eval_count": 7,
+    "eval_count": 11,
+    "prompt_eval_duration": 12345,
+    "eval_duration": 67890,
+    "total_duration": 99999,
+}
+
+# The keys the cockpit dereferences. Mutating any of these breaks behaviour.
+PINNED_CHAT_STREAM_NON_DONE_KEYS = ("done", "message")  # message.content checked separately
+PINNED_CHAT_STREAM_FINAL_USAGE_KEYS = (
+    "done",
+    "prompt_eval_count",
+    "eval_count",
+    "prompt_eval_duration",
+    "eval_duration",
+    "total_duration",
+)
+
+
+def _ndjson_chat_stream_response(non_done: dict, final: dict) -> httpx.Response:
+    body = (json.dumps(non_done) + "\n" + json.dumps(final) + "\n").encode("utf-8")
+    return httpx.Response(
+        200,
+        content=body,
+        headers={"content-type": "application/x-ndjson"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_wire_shape_chat_stream_golden_parses() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/chat"
+        return _ndjson_chat_stream_response(
+            GOLDEN_CHAT_STREAM_NON_DONE, GOLDEN_CHAT_STREAM_FINAL
+        )
+
+    adapter = _adapter_against(handler)
+    try:
+        chunks: list[ChatChunk] = []
+        async for ch in adapter.chat_stream(
+            model="gemma3:27b",
+            messages=[{"role": "user", "content": "hi"}],
+        ):
+            chunks.append(ch)
+    finally:
+        await adapter.aclose()
+
+    assert chunks[0].delta == "Hello"
+    assert chunks[0].done is False
+    final = chunks[-1]
+    assert final.done is True
+    assert final.usage_in == 7
+    assert final.usage_out == 11
+    assert final.eval_duration_ns == 67890
+    assert final.prompt_eval_duration_ns == 12345
+    assert final.total_duration_ns == 99999
+
+
+@pytest.mark.parametrize("dropped_key", PINNED_CHAT_STREAM_FINAL_USAGE_KEYS)
+@pytest.mark.asyncio
+async def test_wire_shape_chat_stream_dropping_pinned_final_key_breaks_parse(
+    dropped_key: str,
+) -> None:
+    """If a future Ollama renames any of the final-chunk usage keys, the
+    parser silently produces wrong values — that would be a quiet bug. This
+    test makes the breakage loud and specific.
     """
+    final = json.loads(json.dumps(GOLDEN_CHAT_STREAM_FINAL))
+    final.pop(dropped_key, None)
 
-    def test_skipped_until_chat_router_lands(self) -> None:
-        pytest.skip("Pinned in the slice that wires chat_stream into UC-04.")
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ndjson_chat_stream_response(GOLDEN_CHAT_STREAM_NON_DONE, final)
+
+    adapter = _adapter_against(handler)
+    try:
+        chunks: list[ChatChunk] = []
+        # If `done` is dropped, the adapter raises OllamaStreamAbortedError because
+        # `saw_done` never flips True.
+        if dropped_key == "done":
+            with pytest.raises(OllamaStreamAbortedError):
+                async for ch in adapter.chat_stream(
+                    model="m",
+                    messages=[{"role": "user", "content": "x"}],
+                ):
+                    chunks.append(ch)
+            return
+        async for ch in adapter.chat_stream(
+            model="m",
+            messages=[{"role": "user", "content": "x"}],
+        ):
+            chunks.append(ch)
+    finally:
+        await adapter.aclose()
+
+    last = chunks[-1]
+    # The dropped key shows up as `None` on the parsed chunk — observable
+    # divergence from the golden, which would propagate into a `gen_tps`
+    # of None and a missing usage row in `messages`.
+    if dropped_key == "prompt_eval_count":
+        assert last.usage_in is None
+    elif dropped_key == "eval_count":
+        assert last.usage_out is None
+    elif dropped_key == "eval_duration":
+        assert last.eval_duration_ns is None
+    elif dropped_key == "prompt_eval_duration":
+        assert last.prompt_eval_duration_ns is None
+    elif dropped_key == "total_duration":
+        assert last.total_duration_ns is None
+
+
+@pytest.mark.asyncio
+async def test_wire_shape_chat_stream_message_content_pinned() -> None:
+    """The mid-stream `message.content` is the token text. If Ollama renames
+    the path (e.g. `delta.content`) the cockpit's deltas go silent.
+    """
+    non_done = json.loads(json.dumps(GOLDEN_CHAT_STREAM_NON_DONE))
+    non_done["message"].pop("content", None)
+    non_done["message"]["delta"] = "Hello"  # plausible alternative shape
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ndjson_chat_stream_response(non_done, GOLDEN_CHAT_STREAM_FINAL)
+
+    adapter = _adapter_against(handler)
+    try:
+        chunks: list[ChatChunk] = []
+        async for ch in adapter.chat_stream(
+            model="m",
+            messages=[{"role": "user", "content": "x"}],
+        ):
+            chunks.append(ch)
+    finally:
+        await adapter.aclose()
+
+    # No content on `message.content` → empty delta from the parser.
+    # That's a meaningful regression — the cockpit would emit no token
+    # events to the user even as Ollama happily streams.
+    assert chunks[0].delta == ""
 
 
 # --- Sanity: probe_ollama no longer makes a real HTTP call -----------------

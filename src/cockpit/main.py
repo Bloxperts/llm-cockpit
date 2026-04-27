@@ -36,6 +36,8 @@ from cockpit.ports.llm_chat import LLMChat, OllamaResponseError, OllamaUnreachab
 from cockpit.ports.telemetry import Telemetry
 from cockpit.routers import admin_ollama as admin_ollama_router
 from cockpit.routers import auth as auth_router
+from cockpit.routers import chat as chat_router
+from cockpit.routers import code as code_router
 from cockpit.routers import dashboard as dashboard_router
 from cockpit.services.metrics import (
     GpuSampler,
@@ -198,6 +200,12 @@ def create_app(
     app.include_router(
         admin_ollama_router.router, prefix="/api/admin/ollama", tags=["admin"]
     )
+    # UC-04 chat router carries its own `/api/...` prefixes on each route
+    # (so it can host the shared `/api/models` picker alongside `/api/chat`),
+    # so it's mounted at root prefix.
+    app.include_router(chat_router.router, tags=["chat"])
+    # UC-05 code router likewise.
+    app.include_router(code_router.router, tags=["code"])
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:

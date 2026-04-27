@@ -134,3 +134,73 @@ class PullRequest(BaseModel):
 
 class PerfTestRequest(BaseModel):
     contexts: list[int] | None = None
+
+
+# --- UC-04 / UC-05: chat + code -------------------------------------------
+
+
+class ConversationCreateRequest(BaseModel):
+    """Empty body is fine — the server picks `mode` from the route prefix
+    and writes a minimal `conversations` row. Optional `model` / `system_prompt`
+    can be supplied to short-circuit the default flow.
+    """
+
+    model: str | None = None
+    system_prompt: str | None = None
+    title: str | None = None
+
+
+class ConversationCreateResponse(BaseModel):
+    conversation_id: int
+    mode: str
+
+
+class ConversationSummary(BaseModel):
+    id: int
+    mode: str
+    title: str | None
+    model: str | None
+    system_prompt: str | None
+    created_at: str
+    updated_at: str
+    message_count: int
+
+
+class MessagePayload(BaseModel):
+    id: int
+    role: str
+    content: str
+    model: str | None
+    usage_in: int | None
+    usage_out: int | None
+    gen_tps: float | None
+    latency_ms: int | None
+    ts: str
+    error: str | None
+
+
+class ConversationDetail(BaseModel):
+    id: int
+    mode: str
+    title: str | None
+    model: str | None
+    system_prompt: str | None
+    created_at: str
+    updated_at: str
+    messages: list[MessagePayload]
+
+
+class ConversationPatchRequest(BaseModel):
+    title: str | None = None
+    model: str | None = None
+    system_prompt: str | None = None
+
+
+class StreamRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+class ModelPickerEntry(BaseModel):
+    name: str
+    tag: str | None
+    size_bytes: int

@@ -1,7 +1,9 @@
-<!-- Status: Accepted | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-28 -->
 # UC-05 · Functional Spec — Code interface
 
-**Status:** Accepted
+**Status:** Done (technical)
+<!-- VAULT-SYNC: backend implementation landed on develop in feature/UC-04-UC-05-chat-code (Sprint 4). Status flipped Accepted → In Progress → Done (technical). Reuses UC-04's stream_reply() service end-to-end; differences are confined to mode='code', the role gate, and the default system prompt. Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off. -->
+
 **Depends on:** UC-04 (shares backend machinery), UC-07 (Ollama integration via `LLMChat` port), ADR-004 (role gate; code-tagged picker).
 **Min role:** `code`.
 **User Spec:** [`../../use-cases/UC-05-code-page.md`](../../use-cases/UC-05-code-page.md)

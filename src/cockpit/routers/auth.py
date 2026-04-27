@@ -252,6 +252,27 @@ def current_user_must_be_settled(
     return user
 
 
+def require_role_settled(min_role: str):
+    """Compose `require_role(min_role)` + `current_user_must_be_settled`.
+
+    Routers that gate on both role + the UC-09 forced-change flow (UC-04
+    chat, UC-05 code, etc.) use this helper to avoid hand-rolling the
+    settled check on every endpoint.
+    """
+    role_dep = require_role(min_role)
+
+    def dep(user: User = Depends(role_dep)) -> User:
+        if user.must_change_password:
+            raise HTTPException(
+                409,
+                detail="must_change_password",
+                headers={"WWW-Authenticate": "ChangePassword"},
+            )
+        return user
+
+    return dep
+
+
 # --- Endpoints -------------------------------------------------------------
 
 
