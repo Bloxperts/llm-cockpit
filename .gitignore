@@ -43,7 +43,10 @@ backups/
 # Build outputs
 frontend/.next
 frontend/out
-backend/htmlcov
+src/cockpit/frontend_dist/
+.coverage
+htmlcov/
+coverage.xml
 
 # Secrets
 secrets/

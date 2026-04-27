@@ -1,0 +1,20 @@
+[server]
+host = "{{ server_host }}"
+port = {{ server_port }}
+
+[ollama]
+url = "{{ ollama_url }}"
+
+[security]
+jwt_secret = "{{ jwt_secret }}"
+session_days = {{ session_days }}
+bcrypt_cost = {{ bcrypt_cost }}
+
+[telemetry]
+nvidia_smi_path = "{{ nvidia_smi_path }}"
+sample_interval_s = {{ sample_interval_s }}
+
+[paths]
+data_dir = "{{ data_dir }}"
+db_file  = "{{ db_file }}"
+log_file = "{{ log_file }}"
