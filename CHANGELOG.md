@@ -3,6 +3,25 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.1.1] — 2026-04-28 — SQLite WAL + embedding model fix
+
+Bug fixes from the first Neuroforge live install.
+
+### Fixed
+
+- **`GpuSampler` `database is locked` errors.** The 5-second background
+  insert into `metrics_snapshot` deadlocked against concurrent request
+  handlers because SQLite's default journal mode allows only one writer.
+  `make_engine` now enables `PRAGMA journal_mode=WAL` and
+  `PRAGMA busy_timeout=5000` for every SQLite connection via a
+  SQLAlchemy connect-event listener.
+- **Performance test crash on embedding-only models.** Models like
+  `nomic-embed-text:latest` return HTTP 400 "does not support chat" on
+  `chat_stream`. `_drop_model` and the perf-harness `cold_load` stage
+  now catch `OllamaResponseError` and emit a clean
+  `{"detail": "model_not_supported"}` SSE error event instead of
+  bubbling up to the ASGI stack as an `ExceptionGroup`.
+
 ## [v0.1.0a2] — 2026-04-28 — Sprint 4: chat + code + Next.js frontend
 
 First **pip-installable** release. Install with:
