@@ -7,7 +7,9 @@ live in `cockpit.models`.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
@@ -41,3 +43,94 @@ class ChangePasswordRequest(BaseModel):
 
 class LogoutResponse(BaseModel):
     pass
+
+
+# --- UC-02: dashboard snapshot --------------------------------------------
+
+
+class GpuPayload(BaseModel):
+    index: int
+    vram_used_mb: int
+    vram_total_mb: int
+    temp_c: float | None
+    power_w: float | None
+
+
+class ModelConfigPayload(BaseModel):
+    placement: str
+    keep_alive_seconds: int | None
+    num_ctx_default: int | None
+    single_flight: bool
+
+
+class ModelActualPayload(BaseModel):
+    loaded: bool
+    vram_mb: int | None
+    main_gpu_actual: int | None
+    mismatch: bool
+
+
+class ModelMetricsPayload(BaseModel):
+    cold_load_seconds: float | None
+    throughput_tps: float | None
+    max_ctx_observed: int | None
+    measured_at: str | None
+
+
+class ModelCardPayload(BaseModel):
+    name: str
+    tag: str | None
+    size_bytes: int
+    config: ModelConfigPayload
+    actual: ModelActualPayload
+    metrics: ModelMetricsPayload | None
+
+
+class DashboardSnapshot(BaseModel):
+    """Mirrors UC-02 §`/api/dashboard/snapshot` payload exactly."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpus: list[GpuPayload]
+    columns: list[str]
+    models: list[ModelCardPayload]
+    last_calls: list[dict[str, Any]]
+    status: str  # 'healthy' | 'degraded' | 'ollama_unreachable'
+    ts: str
+
+
+# --- UC-02: admin Ollama placement / settings ---------------------------
+
+
+class PlaceRequest(BaseModel):
+    placement: str  # 'gpuN' | 'multi_gpu' | 'on_demand' | 'available'
+
+
+class PlaceApplied(BaseModel):
+    keep_alive_seconds: int
+    main_gpu: int | None = None
+    num_gpu: int | None = None
+
+
+class PlaceResponse(BaseModel):
+    applied: PlaceApplied
+    loaded_now: bool
+    mismatch: bool = False
+    main_gpu_actual: int | None = None
+
+
+class ModelSettingsPatch(BaseModel):
+    """All fields optional — only those present are updated."""
+
+    keep_alive_seconds: int | None = None
+    num_ctx_default: int | None = None
+    single_flight: bool | None = None
+    notes: str | None = None
+
+
+class PullRequest(BaseModel):
+    model_name: str | None = None  # accepted for spec parity; the URL path is authoritative
+
+
+class PerfTestRequest(BaseModel):
+    contexts: list[int] | None = None

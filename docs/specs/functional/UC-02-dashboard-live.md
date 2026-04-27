@@ -1,7 +1,13 @@
-<!-- Status: Accepted | Version: 1.0 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+<!-- Status: Done (technical) | Version: 1.0 | Created: 2026-04-26 | Updated: 2026-04-28 -->
 # UC-02 · Functional Spec — Live dashboard + model placement board
 
-**Status:** Accepted
+**Status:** Done (technical)
+<!-- VAULT-SYNC: implementation landed on develop in feature/UC-02-dashboard. Status flipped Accepted → In Progress → Done (technical). Spec adaptations recorded inline in the implementation:
+  • The Sprint 3 frontend is plain HTML + inline JS (no Next.js + dnd-kit yet — that is Sprint 4). Drag-drop is replaced with a per-card <select>. Same backend contract.
+  • `last_calls` returns [] until UC-04 lands the chat router writing the `messages` table (TODO comment in routers/dashboard.py).
+  • `_probe_max_context` walks contexts largest-first; spec didn't pin the search strategy. Documented in the source.
+Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off on Neuroforge. -->
+
 **Depends on:** UC-01 (login), UC-07 (`LLMChat` port + `OllamaLLMChat` adapter), ADR-004 (role gate), **ADR-005 (per-model lifecycle + perf harness)**.
 **Use Case:** [`../../use-cases/UC-02-dashboard-live.md`](../../use-cases/UC-02-dashboard-live.md)
 **Test Spec:** [`../test/UC-02-dashboard-live.md`](../test/UC-02-dashboard-live.md)

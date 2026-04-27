@@ -4,8 +4,11 @@ Routers / services that depend on `LLMChat` inject this in their unit tests
 instead of the real adapter, so no socket is opened. Per UC-07 §Test seam +
 ADR-002 v1.1.
 
-Records every call into `last_call` so dashboard placement tests
-(Sprint 3) can assert option values like `main_gpu`, `keep_alive`, etc.
+Records every call into both `last_call` (most recent) and `calls` (full
+history). UC-02 placement / perf-test assertions need the full history
+because the placement handler mixes `chat_stream` warm-ups with
+`loaded()` polling — each overwriting `last_call` — and tests want to
+inspect the warm-up call regardless of what came after.
 """
 
 from __future__ import annotations
@@ -60,10 +63,19 @@ class FakeLLMChat:
         self._raise_on_loaded = raise_on_loaded
 
         self.last_call: dict[str, Any] | None = None
+        self.calls: list[dict[str, Any]] = []
         self.deleted: list[str] = []
 
     def _record(self, method: str, **kwargs: Any) -> None:
-        self.last_call = {"method": method, **kwargs}
+        entry = {"method": method, **kwargs}
+        self.last_call = entry
+        self.calls.append(entry)
+
+    def calls_of(self, method: str) -> list[dict[str, Any]]:
+        """Filter the recorded call history by method name. Convenience for
+        tests asserting against a specific subset (e.g. `calls_of("chat_stream")`).
+        """
+        return [c for c in self.calls if c["method"] == method]
 
     async def list_models(self) -> list[ModelInfo]:
         self._record("list_models")
@@ -101,6 +113,12 @@ class FakeLLMChat:
         if self._known_models and model not in self._known_models:
             raise OllamaModelNotFound(model)
         self.deleted.append(model)
+
+    async def aclose(self) -> None:
+        """No-op aclose so callers (routers, lifespan) can treat the fake
+        like the real adapter without conditional `getattr(..., 'aclose')`
+        guards."""
+        self._record("aclose")
 
 
 def model_info(name: str, *, size_bytes: int = 1_000, digest: str = "sha256:fake") -> ModelInfo:

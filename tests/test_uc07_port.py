@@ -786,7 +786,10 @@ def test_probe_ollama_via_fake_chat_no_socket(tmp_path: Path) -> None:
 
     names = probe_ollama("http://ignored", chat_factory=lambda url: fake)
     assert names == ["gemma3:27b", "qwen3-coder:30b"]
-    assert fake.last_call == {"method": "list_models"}
+    # `probe_ollama` calls `list_models()` once and `aclose()` once. Use
+    # `calls_of(...)` rather than `last_call` since aclose overwrites the
+    # latter.
+    assert len(fake.calls_of("list_models")) == 1
 
 
 def test_probe_ollama_maps_unreachable_to_bootstrap_error() -> None:

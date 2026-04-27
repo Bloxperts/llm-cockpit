@@ -1,0 +1,389 @@
+"""Dashboard metrics services.
+
+Two periodic samplers + a pure snapshot assembler:
+
+- `GpuSampler` — every 5 s. Calls `Telemetry.sample()`, persists rows to
+  `metrics_snapshot`, and updates `app.state.gpu_snapshots` so the
+  dashboard endpoints can return the latest reading without hitting the
+  subprocess on every request.
+- `ModelStateSampler` — every 30 s. Calls `LLMChat.list_models()` and
+  `LLMChat.loaded()` and updates `app.state.model_state`.
+- `assemble_dashboard_snapshot(...)` — pure function that takes the
+  current app.state inputs + a session and returns the dashboard payload
+  dict that matches the schema in the UC-02 functional spec.
+
+The samplers expose `sample_once()` for tests + `run()` for the lifespan
+loop. Both methods swallow exceptions: a single failed iteration logs and
+continues so the loop is fault-tolerant.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from cockpit.models import MetricsSnapshot, ModelConfig, ModelPerf, ModelTag
+from cockpit.ports.llm_chat import (
+    LLMChat,
+    LoadedModel,
+    ModelInfo,
+    OllamaResponseError,
+    OllamaUnreachableError,
+)
+from cockpit.ports.telemetry import GpuSnapshot, Telemetry, TelemetryUnavailableError
+
+log = logging.getLogger(__name__)
+
+GPU_SAMPLE_INTERVAL_S = 5.0
+MODEL_STATE_SAMPLE_INTERVAL_S = 30.0
+OLLAMA_UNREACHABLE_THRESHOLD_S = 30.0
+
+
+# --- Per-app state containers --------------------------------------------
+
+
+@dataclass
+class GpuSamplerState:
+    last_snapshots: list[GpuSnapshot] | None = None
+    last_success_at: float | None = None
+    last_error: str | None = None
+    last_error_at: float | None = None
+
+
+@dataclass
+class ModelStateSamplerState:
+    available_models: list[ModelInfo] = field(default_factory=list)
+    loaded_models: list[LoadedModel] = field(default_factory=list)
+    last_success_at: float | None = None
+    last_error: str | None = None
+    last_error_at: float | None = None
+
+
+# --- Samplers ------------------------------------------------------------
+
+
+class GpuSampler:
+    """Polls `Telemetry.sample()` on a fixed cadence; persists `MetricsSnapshot`
+    rows; keeps the most recent snapshot list on `state.last_snapshots`.
+
+    Constructor takes a `session_factory` so each iteration owns its own
+    session — long-lived sessions across the lifespan of the app are a
+    SQLAlchemy anti-pattern.
+    """
+
+    def __init__(
+        self,
+        *,
+        telemetry: Telemetry,
+        session_factory: sessionmaker[Session],
+        state: GpuSamplerState,
+        interval_s: float = GPU_SAMPLE_INTERVAL_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.telemetry = telemetry
+        self.session_factory = session_factory
+        self.state = state
+        self.interval_s = interval_s
+        self._clock = clock
+
+    async def sample_once(self) -> None:
+        """Run a single sample iteration. Persist on success, log on failure."""
+        try:
+            snapshots = await self.telemetry.sample()
+        except TelemetryUnavailableError as exc:
+            self.state.last_error = str(exc)
+            self.state.last_error_at = self._clock()
+            log.warning("GpuSampler: telemetry unavailable: %s", exc)
+            return
+        except Exception as exc:  # defensive — never crash the loop
+            self.state.last_error = f"{type(exc).__name__}: {exc}"
+            self.state.last_error_at = self._clock()
+            log.warning("GpuSampler: unexpected error: %s", exc)
+            return
+
+        self.state.last_snapshots = snapshots
+        self.state.last_success_at = self._clock()
+        self.state.last_error = None
+
+        if snapshots is None:
+            return  # no GPU; nothing to persist
+
+        with self.session_factory() as session:
+            for snap in snapshots:
+                session.add(
+                    MetricsSnapshot(
+                        gpu_index=snap.index,
+                        vram_used_mb=snap.vram_used_mb,
+                        vram_total_mb=snap.vram_total_mb,
+                        temp_c=snap.temp_c,
+                        power_w=snap.power_w,
+                    )
+                )
+            session.commit()
+
+    async def run(self) -> None:
+        """Periodic loop. Cancelled cleanly when the lifespan exits."""
+        while True:
+            try:
+                await self.sample_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # belt + braces over sample_once's own try/except
+                log.warning("GpuSampler.run: %s", exc)
+            try:
+                await asyncio.sleep(self.interval_s)
+            except asyncio.CancelledError:
+                raise
+
+
+class ModelStateSampler:
+    """Polls `LLMChat.list_models()` + `LLMChat.loaded()` on a fixed cadence
+    so `/api/dashboard/snapshot` doesn't hit Ollama on every request.
+
+    Errors set `state.last_error` and `state.last_error_at`; the dashboard
+    surfaces this as the `ollama_unreachable` status.
+    """
+
+    def __init__(
+        self,
+        *,
+        chat: LLMChat,
+        state: ModelStateSamplerState,
+        interval_s: float = MODEL_STATE_SAMPLE_INTERVAL_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.chat = chat
+        self.state = state
+        self.interval_s = interval_s
+        self._clock = clock
+
+    async def sample_once(self) -> None:
+        try:
+            available = await self.chat.list_models()
+            loaded = await self.chat.loaded()
+        except (OllamaUnreachableError, OllamaResponseError) as exc:
+            self.state.last_error = str(exc)
+            self.state.last_error_at = self._clock()
+            log.warning("ModelStateSampler: %s", exc)
+            return
+        except Exception as exc:
+            self.state.last_error = f"{type(exc).__name__}: {exc}"
+            self.state.last_error_at = self._clock()
+            log.warning("ModelStateSampler: unexpected error: %s", exc)
+            return
+
+        self.state.available_models = available
+        self.state.loaded_models = loaded
+        self.state.last_success_at = self._clock()
+        self.state.last_error = None
+
+    async def run(self) -> None:
+        while True:
+            try:
+                await self.sample_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("ModelStateSampler.run: %s", exc)
+            try:
+                await asyncio.sleep(self.interval_s)
+            except asyncio.CancelledError:
+                raise
+
+
+# --- Snapshot assembler --------------------------------------------------
+
+
+def _columns_for(gpu_count: int) -> list[str]:
+    """Build the placement column list per UC-02 §placement board.
+
+    No GPU → no GPU columns and no Multi-GPU column (nothing to multi-).
+    1 GPU → gpu0 only (no Multi-GPU; only one GPU).
+    ≥ 2 GPUs → gpu0..gpuN + Multi-GPU.
+    Always: On Demand + Available.
+    """
+    cols: list[str] = []
+    cols.extend(f"gpu{i}" for i in range(gpu_count))
+    if gpu_count >= 2:
+        cols.append("multi_gpu")
+    cols.append("on_demand")
+    cols.append("available")
+    return cols
+
+
+def _model_state_status(
+    gpu_state: GpuSamplerState,
+    model_state: ModelStateSamplerState,
+    *,
+    now: float,
+) -> str:
+    """Per UC-02 functional spec §status field.
+
+    Three states:
+        healthy             — both samplers have at least one successful run
+                              and no ongoing error.
+        ollama_unreachable  — ModelStateSampler has been failing > 30 s.
+        degraded            — anything else (e.g. GPU sampler errored once,
+                              model sampler is fine).
+    """
+    model_failing_for = 0.0
+    if model_state.last_error is not None and model_state.last_error_at is not None:
+        # Failing window: from last_error_at to now, *if* there hasn't been a
+        # success since.
+        if (
+            model_state.last_success_at is None
+            or model_state.last_success_at < model_state.last_error_at
+        ):
+            model_failing_for = now - model_state.last_error_at
+    if model_failing_for > OLLAMA_UNREACHABLE_THRESHOLD_S:
+        return "ollama_unreachable"
+
+    if gpu_state.last_error is not None or model_state.last_error is not None:
+        return "degraded"
+    if model_state.last_success_at is None:
+        # Never succeeded — treat as degraded (we don't know yet).
+        return "degraded"
+    return "healthy"
+
+
+def _serialize_gpu(snap: GpuSnapshot) -> dict[str, Any]:
+    return {
+        "index": snap.index,
+        "vram_used_mb": snap.vram_used_mb,
+        "vram_total_mb": snap.vram_total_mb,
+        "temp_c": snap.temp_c,
+        "power_w": snap.power_w,
+    }
+
+
+def _serialize_loaded(loaded: list[LoadedModel]) -> dict[str, dict[str, Any]]:
+    return {
+        m.name: {
+            "loaded": True,
+            "vram_mb": m.size_vram // (1024 * 1024) if m.size_vram else None,
+            "until": m.until.isoformat() if m.until is not None else None,
+        }
+        for m in loaded
+    }
+
+
+def _last_perf_for(session: Session, model: str) -> dict[str, Any] | None:
+    row = (
+        session.execute(
+            select(ModelPerf)
+            .where(ModelPerf.model == model)
+            .order_by(ModelPerf.measured_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        return None
+    return {
+        "cold_load_seconds": row.cold_load_seconds,
+        "throughput_tps": row.throughput_tps,
+        "max_ctx_observed": row.max_ctx_observed,
+        "measured_at": row.measured_at.isoformat() if row.measured_at else None,
+    }
+
+
+def _build_model_card(
+    *,
+    info: ModelInfo,
+    config: ModelConfig | None,
+    tag: str | None,
+    loaded_index: dict[str, dict[str, Any]],
+    perf: dict[str, Any] | None,
+) -> dict[str, Any]:
+    placement = config.placement if config is not None else "available"
+    config_payload = {
+        "placement": placement,
+        "keep_alive_seconds": config.keep_alive_seconds if config is not None else None,
+        "num_ctx_default": config.num_ctx_default if config is not None else None,
+        "single_flight": bool(config.single_flight) if config is not None else False,
+    }
+    loaded_info = loaded_index.get(info.name)
+    actual = {
+        "loaded": bool(loaded_info),
+        "vram_mb": (loaded_info or {}).get("vram_mb"),
+        "main_gpu_actual": None,  # set by placement-transition handler when known
+        "mismatch": False,
+    }
+    return {
+        "name": info.name,
+        "tag": tag,
+        "size_bytes": info.size_bytes,
+        "config": config_payload,
+        "actual": actual,
+        "metrics": perf,
+    }
+
+
+def assemble_dashboard_snapshot(
+    *,
+    session: Session,
+    gpu_state: GpuSamplerState,
+    model_state: ModelStateSamplerState,
+    last_calls: list[dict[str, Any]] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Pure-function snapshot assembler. The pre-computed sampler state
+    means we avoid hitting Ollama / the GPU on each HTTP request.
+
+    `last_calls` is `[]` until UC-04 lands the chat router writing the
+    `messages` table — see TODO comment in routers/dashboard.py.
+    """
+    now = now if now is not None else time.monotonic()
+    snapshots = gpu_state.last_snapshots or []
+    gpus_payload = [_serialize_gpu(s) for s in snapshots]
+    columns = _columns_for(len(snapshots))
+
+    loaded_index = _serialize_loaded(model_state.loaded_models)
+
+    # Pull per-model auxiliary data from the DB in one shot.
+    model_names = [info.name for info in model_state.available_models]
+    if model_names:
+        configs = {
+            cfg.model: cfg
+            for cfg in session.execute(
+                select(ModelConfig).where(ModelConfig.model.in_(model_names))
+            ).scalars()
+        }
+        tags = {
+            tag.model: tag.tag
+            for tag in session.execute(
+                select(ModelTag).where(ModelTag.model.in_(model_names))
+            ).scalars()
+        }
+    else:
+        configs = {}
+        tags = {}
+
+    models_payload = [
+        _build_model_card(
+            info=info,
+            config=configs.get(info.name),
+            tag=tags.get(info.name),
+            loaded_index=loaded_index,
+            perf=_last_perf_for(session, info.name),
+        )
+        for info in model_state.available_models
+    ]
+
+    return {
+        "gpus": gpus_payload,
+        "columns": columns,
+        "models": models_payload,
+        "last_calls": list(last_calls) if last_calls is not None else [],
+        "status": _model_state_status(gpu_state, model_state, now=now),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }

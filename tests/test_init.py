@@ -188,4 +188,6 @@ def test_init_alembic_revision_recorded(
     with engine.connect() as conn:
         row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
     assert row is not None
-    assert row[0] == "0001"
+    # Track the moving head — UC-08 Slice A → 0001, UC-02 → 0002, etc.
+    from cockpit.db import head_revision
+    assert row[0] == head_revision()
