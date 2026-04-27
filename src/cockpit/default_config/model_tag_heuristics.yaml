@@ -1,0 +1,18 @@
+# Model-name → tag heuristic per ADR-004 §3.
+#
+# A model whose name matches any pattern in `code_patterns` is auto-tagged
+# `code`. Anything else is auto-tagged `chat`. Admin overrides (UC-10) win
+# over heuristic.
+#
+# Editable by the admin without restarting the cockpit (UC-10 reloads it).
+
+code_patterns:
+  - coder
+  - code-
+  - codellama
+  - deepseek-r1
+  - qwen2\\.5-coder
+  - starcoder
+  - wizardcoder
+  - phind
+  - magicoder
