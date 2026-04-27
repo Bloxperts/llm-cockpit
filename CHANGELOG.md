@@ -3,6 +3,65 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.1.2] — 2026-04-28 — Chat UX improvements + visual polish
+
+UI-layer slice on top of Sprint 4. No new use cases, ports, or DB tables —
+all changes fall under the existing Accepted UC-04 (chat) and UC-05 (code)
+functional specs.
+
+### Added
+
+- **Copy button on every fenced code block.** Click → `navigator.clipboard`
+  → checkmark confirmation for 1.5 s. Inline code unchanged.
+- **Download button on `html`, `markdown`/`md`, `txt`, and `json` code
+  blocks.** Client-side `Blob` → `<a download="artifact.{ext}">` → revoke.
+  No backend round-trip.
+- **Floating scroll-to-bottom button.** Appears via `IntersectionObserver`
+  on the message-end anchor when the user has scrolled away from the
+  latest reply. Smooth-scrolls back on click.
+- **"Think" toggle** on the chat compose toolbar. Persists per-mode in
+  `localStorage`. Pipes `think: true` into the stream request body, which
+  the backend forwards as `options={"think": true}` to
+  `LLMChat.chat_stream`. Models that don't recognise the option (most)
+  ignore it silently per Ollama's docs.
+- **Session token counter** below the compose box: live progress bar
+  (neutral → amber at 80 % → rose at 95 %) plus exact `<used>/<limit>`
+  count. Limit comes from `model_config.num_ctx_default` (now exposed on
+  `ConversationDetail`); falls back to 8192.
+- **Live ⏱ response timer** in the compose bar while the model is
+  generating; updates every 100 ms. Frozen elapsed value shows up next to
+  the conversation title as `Last response: 3.4 s` once the stream finishes.
+- **Visual polish** — Claude-style two-column layout with a dark sidebar,
+  light main pane, max-width message column, user-message bubbles with a
+  cut bottom-right corner, no-bubble assistant messages with an orange
+  avatar badge, syntax-highlighted code blocks
+  (`react-syntax-highlighter` / `oneDark` theme) wrapped in a header bar
+  carrying the language label + copy/download buttons, redesigned compose
+  card with auto-grow textarea and an icon-only send button, and a
+  blinking streaming cursor at the end of the in-flight assistant
+  message.
+- **Dark mode toggle** in `AppHeader` (sun / moon icon). Class-based
+  Tailwind 4 strategy (`@custom-variant dark (&:where(.dark, .dark *))`)
+  toggles the `.dark` class on `<html>`. Persists via `localStorage`;
+  initial render respects the system preference.
+
+### Backend
+
+- `StreamRequest` schema gains `think: bool = False`.
+- `stream_reply()` accepts `options: dict | None` and forwards verbatim to
+  `LLMChat.chat_stream(options=...)`.
+- `ConversationDetail` schema gains `num_ctx_default: int | None`,
+  populated by joining the `model_config` row for the conversation's
+  current model. `null` when no row exists.
+
+### Tests
+
+- `test_think_true_passes_through_to_chat_stream_options` and
+  `test_think_false_omits_options_dict` in `tests/test_uc04_chat.py`.
+- `test_conversation_detail_includes_num_ctx_default` (and the null
+  case) confirm the new schema field round-trips through the DB join.
+- 285 tests collected total (was 281); all green.
+
 ## [v0.1.1] — 2026-04-28 — SQLite WAL + embedding model fix
 
 Bug fixes from the first Neuroforge live install.

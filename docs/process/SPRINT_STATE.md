@@ -1,7 +1,17 @@
-<!-- Status: Live | Updated: 2026-04-27 -->
+<!-- Status: Live | Updated: 2026-04-28 -->
 # LLM Cockpit — Sprint State
 
 **Live document.** Updated at every sprint planning, every spec status transition, and every sprint review.
+
+<!-- VAULT-SYNC: this file is significantly stale relative to develop. The
+vault should be re-synced at the next sprint review to capture: Sprint 2
+closed (UC-01, UC-07, UC-08 part A+B, UC-09 all merged + User-Accepted),
+Sprint 3 closed (UC-02 merged + User-Accepted), Sprint 4 closed (UC-04 +
+UC-05 + Next.js frontend + v0.1.0a2 release), the v0.1.1 hotfix
+(SQLite WAL + embedding-model perf), and Sprint 5 *in progress*: UI-layer
+chat/code refinements (copy/download/scroll/think/tokens/timer/visual
+polish) tracked under the existing Accepted UC-04 + UC-05 functional specs
+— no new ports, tables, or use cases. Tagged release v0.1.2. -->
 
 ---
 

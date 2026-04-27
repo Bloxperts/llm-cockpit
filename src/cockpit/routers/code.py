@@ -27,6 +27,7 @@ from cockpit.routers.auth import require_role_settled
 from cockpit.routers.chat import (
     _create_conversation,
     _delete_conversation,
+    _options_from_stream_request,
     _patch_conversation,
     _serialize_conversation_detail,
     _serialize_conversation_summary,
@@ -116,6 +117,7 @@ async def stream_code_reply(
     )
     if conv is None:
         raise HTTPException(404, detail="conversation_not_found")
+    options = _options_from_stream_request(body)
     return await _stream_response(
         user=user,
         conversation=conv,
@@ -123,6 +125,7 @@ async def stream_code_reply(
         request=request,
         settings=settings,
         chat_factory=chat_factory,
+        options=options,
     )
 
 

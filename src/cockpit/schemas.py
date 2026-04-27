@@ -187,6 +187,10 @@ class ConversationDetail(BaseModel):
     system_prompt: str | None
     created_at: str
     updated_at: str
+    # Sprint 5 UX (Feature 5 — token counter): joined from model_config row
+    # for the conversation's current model. None if no per-model row exists;
+    # the frontend falls back to a default ctx (8192) in that case.
+    num_ctx_default: int | None = None
     messages: list[MessagePayload]
 
 
@@ -198,6 +202,11 @@ class ConversationPatchRequest(BaseModel):
 
 class StreamRequest(BaseModel):
     content: str = Field(..., min_length=1)
+    # Sprint 5 (Feature 4 — Thinking toggle): some Ollama models
+    # (deepseek-r1, qwen3, ...) accept `think: true` to enable extended
+    # reasoning. Default false. Models that don't recognise the option
+    # ignore it silently per Ollama's docs.
+    think: bool = False
 
 
 class ModelPickerEntry(BaseModel):
