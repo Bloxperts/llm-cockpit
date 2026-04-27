@@ -480,7 +480,12 @@ async def patch_settings(
 
 
 async def _drop_model(chat: LLMChat, model: str) -> None:
-    """Issue a one-shot generate with keep_alive=0 to drop the model."""
+    """Issue a one-shot generate with keep_alive=0 to drop the model.
+
+    Embedding-only models (e.g. nomic-embed-text) return HTTP 400
+    "does not support chat". Treat that as a successful no-op — the model
+    was never loaded via chat so there's nothing to unload.
+    """
     try:
         async for _chunk in chat.chat_stream(
             model=model,
@@ -488,8 +493,8 @@ async def _drop_model(chat: LLMChat, model: str) -> None:
             options={"keep_alive": 0},
         ):
             break
-    except OllamaModelNotFound:
-        # Already gone.
+    except (OllamaModelNotFound, OllamaResponseError):
+        # Already gone, or model doesn't support chat (embedding-only).
         return
 
 
@@ -661,6 +666,15 @@ async def perf_test(
                                 "event": "error",
                                 "data": json.dumps(
                                     {"detail": "ollama_unreachable", "cause": str(exc)}
+                                ),
+                            }
+                            return
+                        except OllamaResponseError as exc:
+                            # HTTP 400 "does not support chat" — embedding-only model.
+                            yield {
+                                "event": "error",
+                                "data": json.dumps(
+                                    {"detail": "model_not_supported", "cause": str(exc)}
                                 ),
                             }
                             return

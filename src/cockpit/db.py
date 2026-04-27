@@ -19,7 +19,19 @@ from sqlalchemy.orm import Session, sessionmaker
 
 
 def make_engine(db_url: str) -> Engine:
-    return create_engine(db_url, future=True)
+    engine = create_engine(db_url, future=True)
+    # Enable WAL journal mode for SQLite so background tasks (GpuSampler,
+    # ModelStateSampler) can INSERT concurrently with request-handler reads.
+    # WAL allows one writer + many concurrent readers without locking.
+    if db_url.startswith("sqlite"):
+        from sqlalchemy import event as sa_event
+
+        @sa_event.listens_for(engine, "connect")
+        def _set_wal(dbapi_conn, _connection_record):  # noqa: ANN001
+            dbapi_conn.execute("PRAGMA journal_mode=WAL")
+            dbapi_conn.execute("PRAGMA busy_timeout=5000")  # 5 s retry on lock
+
+    return engine
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
