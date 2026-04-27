@@ -28,3 +28,20 @@ def get_session(request: Request) -> Iterator[Session]:
 
 def get_settings(request: Request) -> Settings:
     return request.app.state.settings
+
+
+def get_chat_factory(request: Request):
+    """Return the LLMChat factory configured for the app (`url -> LLMChat`).
+    Routers that issue ad-hoc Ollama calls (placement warm-up, perf harness,
+    pull, delete) build their own adapter via this factory and `aclose()`
+    when done.
+    """
+    return request.app.state.chat_factory
+
+
+def get_telemetry_factory(request: Request):
+    """Return the Telemetry factory (`() -> Telemetry`). Routers that need
+    a one-shot snapshot (e.g. placement-transition mismatch detection)
+    build an adapter via this factory.
+    """
+    return request.app.state.telemetry_factory

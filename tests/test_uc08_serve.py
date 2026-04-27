@@ -75,7 +75,9 @@ def test_static_dashboard_directory_serves_index(initialised_settings: Settings)
     with TestClient(app) as client:
         r = client.get("/dashboard/")
         assert r.status_code == 200
-        assert "Sprint 2 placeholder" in r.text
+        # UC-02 (Sprint 3) replaced the Sprint-2 placeholder with the
+        # functional read-only board. Both eras keep the Log out button.
+        assert "Sprint 3 placeholder" in r.text
         assert "Log out" in r.text
 
 

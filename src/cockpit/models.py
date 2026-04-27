@@ -1,11 +1,9 @@
 """SQLAlchemy ORM for the v0.1 schema.
 
-This module defines the six tables in scope for Slice A of UC-08:
-`users`, `login_audit`, `model_tags`, `settings`, `model_config`, `model_perf`.
-
-Tables `conversations`, `messages`, `metrics_snapshot`, and `admin_audit` land
-in their respective UC sprints (UC-04 / UC-05 chat, UC-02 dashboard, UC-06
-admin user management).
+UC-08 Slice A defined six tables: `users`, `login_audit`, `model_tags`,
+`settings`, `model_config`, `model_perf`. UC-02 (Sprint 3) adds
+`metrics_snapshot` (GPU sampler) and `admin_audit` (state-changing admin
+actions). `conversations` and `messages` land with UC-04 / UC-05.
 
 ADR-004 (role ladder), ADR-005 (per-model lifecycle), and COMPONENTS.md §4 are
 the governing references.
@@ -129,4 +127,51 @@ class ModelPerf(Base):
 
     __table_args__ = (
         Index("idx_model_perf_model_ts", "model", "measured_at"),
+    )
+
+
+# --- UC-02: dashboard / admin lifecycle audit -----------------------------
+
+
+class MetricsSnapshot(Base):
+    """One row per GPU per sample (5 s cadence, GpuSampler in services/metrics.py)."""
+
+    __tablename__ = "metrics_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp()
+    )
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    vram_used_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    vram_total_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_metrics_snapshot_ts", "ts"),
+        Index("idx_metrics_snapshot_gpu_ts", "gpu_index", "ts"),
+    )
+
+
+class AdminAudit(Base):
+    """One row per state-changing admin action (place / pull / delete /
+    settings_patch / perf_test). Per COMPONENTS.md §4 + DP-013.
+    """
+
+    __tablename__ = "admin_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp()
+    )
+    actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    target_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    details_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("idx_admin_audit_ts", "ts"),
+        Index("idx_admin_audit_action", "action"),
     )

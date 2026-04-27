@@ -37,7 +37,9 @@ def test_migrate_creates_schema_in_empty_data_dir(
         with engine.connect() as conn:
             row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
         assert row is not None
-        assert row[0] == "0001"
+        # Track the moving head — bumps each time a new alembic revision lands.
+        from cockpit.db import head_revision
+        assert row[0] == head_revision()
     finally:
         engine.dispose()
 
