@@ -1,23 +1,26 @@
 """`cockpit-admin init` orchestration.
 
-Resolves the data dir + Ollama URL + bind interface, probes Ollama once,
-writes `config.toml`, runs migrations, seeds the admin user, and snapshots
-discovered models into `model_tags`.
+Resolves the data dir + Ollama URL + bind interface, probes Ollama once
+through the `LLMChat` port (UC-07), writes `config.toml`, runs migrations,
+seeds the admin user, and snapshots discovered models into `model_tags`.
 
-Slice A uses a direct `httpx` GET against `/api/tags` for the probe; Slice B
-of UC-08 (after UC-07 lands) refactors that call to `LLMChat.list_models()`.
+DI seam: `run_init` and `probe_ollama` accept a `chat_factory` callable that
+returns an `LLMChat`-conforming object. The default factory builds
+`OllamaLLMChat`; tests inject `FakeLLMChat`. This is the line that satisfies
+UC-07 AC-1 ("no direct OLLAMA_URL / httpx calls outside the adapter").
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-import httpx
 import tomli_w
 from jinja2 import Template
 
@@ -32,7 +35,6 @@ from cockpit.config import (
     default_data_dir,
 )
 from cockpit.db import (
-    alembic_config_for,
     ensure_data_dir,
     head_revision,
     make_engine,
@@ -40,12 +42,31 @@ from cockpit.db import (
     session_scope,
     upgrade_to_head,
 )
+from cockpit.ports.llm_chat import (
+    LLMChat,
+    OllamaResponseError,
+    OllamaUnreachableError,
+)
 from cockpit.services.model_tags import load_heuristic, snapshot_tags
 from cockpit.services.users import (
     DEFAULT_ADMIN_PASSWORD,
     admin_exists,
     seed_admin,
 )
+
+ChatFactory = Callable[[str], LLMChat]
+
+
+def _default_chat_factory(url: str) -> LLMChat:
+    """Production factory: build the real Ollama adapter.
+
+    Imported lazily so `services/bootstrap.py` doesn't pull `httpx` into its
+    import graph at module-load time (the adapter does, of course; that's
+    where the boundary belongs).
+    """
+    from cockpit.adapters.ollama_chat import OllamaLLMChat
+
+    return OllamaLLMChat(url)
 
 VALID_BIND_CHOICES = {"127.0.0.1", "0.0.0.0"}
 TLS_REMINDER = (
@@ -99,31 +120,39 @@ def _resolve_ollama_url(opt: str | None) -> str:
     )
 
 
-def probe_ollama(url: str, *, timeout: float = 5.0) -> list[str]:
-    """Hit `{url}/api/tags`. Return the discovered model names. Raise
-    `BootstrapError` (exit 1) on any connection failure or non-2xx.
+def probe_ollama(
+    url: str,
+    *,
+    chat_factory: ChatFactory | None = None,
+) -> list[str]:
+    """Probe Ollama for the discovered model names via the `LLMChat` port.
+
+    Builds a transient adapter (or uses the test factory's), runs
+    `list_models()`, and returns the names. Maps port-level failures to
+    `BootstrapError(exit_code=1)` with the user-facing install-guide hint.
     """
+    factory = chat_factory or _default_chat_factory
+    chat = factory(url)
+
+    async def _run() -> list[str]:
+        try:
+            return [m.name for m in await chat.list_models()]
+        finally:
+            aclose = getattr(chat, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
     try:
-        resp = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=timeout)
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+        return asyncio.run(_run())
+    except OllamaUnreachableError as exc:
         raise BootstrapError(
             f"Cannot reach Ollama at {url}. Is `ollama serve` running? "
             f"See https://ollama.com/download\n  (cause: {exc!s})"
         ) from exc
-    except httpx.HTTPError as exc:
+    except OllamaResponseError as exc:
         raise BootstrapError(
-            f"Cannot reach Ollama at {url}. (HTTP error: {exc!s})"
+            f"Cannot reach Ollama at {url}. (HTTP {exc.status}: {exc.body[:200]})"
         ) from exc
-
-    if resp.status_code != 200:
-        raise BootstrapError(
-            f"Cannot reach Ollama at {url}. (HTTP {resp.status_code}: "
-            f"{resp.text[:200]})"
-        )
-
-    payload = resp.json()
-    models = payload.get("models", []) or []
-    return [m.get("name", "") for m in models if m.get("name")]
 
 
 def _resolve_bind(
@@ -217,9 +246,18 @@ def _is_already_initialised(data_dir: Path, db_url: str) -> bool:
     return current is not None and current == head_revision()
 
 
-def run_init(opt: InitOptions, *, stdin=None, stdout=None) -> InitResult:
+def run_init(
+    opt: InitOptions,
+    *,
+    stdin=None,
+    stdout=None,
+    chat_factory: ChatFactory | None = None,
+) -> InitResult:
     """Run the full `init` flow. Returns a structured result; raises
     `BootstrapError` (with non-zero exit code) on any halting condition.
+
+    `chat_factory` is the DI seam for tests. Defaults to building an
+    `OllamaLLMChat` against the resolved URL.
     """
     if stdin is None:
         stdin = sys.stdin
@@ -231,8 +269,8 @@ def run_init(opt: InitOptions, *, stdin=None, stdout=None) -> InitResult:
     # Step 1-2: data dir.
     ensure_data_dir(data_dir)
 
-    # Step 3-4: probe Ollama.
-    discovered = probe_ollama(ollama_url)
+    # Step 3-4: probe Ollama via the LLMChat port.
+    discovered = probe_ollama(ollama_url, chat_factory=chat_factory)
 
     # Idempotency check: if DB exists with current schema and config exists,
     # we're done — don't overwrite anything.
