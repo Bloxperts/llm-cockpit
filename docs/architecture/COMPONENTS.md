@@ -1,7 +1,7 @@
-<!-- Status: Review | Version: 1.0 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+<!-- Status: Accepted | Version: 1.0 | Created: 2026-04-26 | Updated: 2026-04-27 -->
 # LLM Cockpit — Architecture (Components)
 
-**Status:** Review (Sprint 1 architecture sprint)
+**Status:** Accepted (locked end of Sprint 1)
 **Version:** 1.0
 **Date:** 2026-04-27
 
@@ -29,7 +29,7 @@ The cockpit is a single Python process that serves a bundled Next.js static fron
 │  ┌─ HTTP layer ────────────────────────────────────────────────────────────┐ │
 │  │  routers/ : auth, dashboard, chat, code, admin_users, admin_ollama      │ │
 │  │             ├ Depends(current_user)                                     │ │
-│  │             ├ Depends(current_user_must_be_settled)   (US-09)           │ │
+│  │             ├ Depends(current_user_must_be_settled)   (UC-09)           │ │
 │  │             └ Depends(require_role(min_role))         (ADR-004)         │ │
 │  │  Static  : StaticFiles mount of frontend_dist/ for non-/api paths       │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
@@ -43,8 +43,8 @@ The cockpit is a single Python process that serves a bundled Next.js static fron
 │  └─────────────────────────────────────────────────────────────────────────┘ │
 │                                                                              │
 │  ┌─ Adapters (the only boundary-crossing code) ────────────────────────────┐ │
-│  │  adapters/ollama_chat.py  → OllamaLLMChat       (US-07; binds DG-004)   │ │
-│  │  adapters/telemetry.py    → NvidiaSmiTelemetry  (US-02; optional)       │ │
+│  │  adapters/ollama_chat.py  → OllamaLLMChat       (UC-07; binds DG-004)   │ │
+│  │  adapters/telemetry.py    → NvidiaSmiTelemetry  (UC-02; optional)       │ │
 │  │  adapters/fake_chat.py    → FakeLLMChat         (test seam only)        │ │
 │  │  adapters/fake_telemetry  → FakeTelemetry       (test seam only)        │ │
 │  └─────────────────────────────────────────────────────────────────────────┘ │
@@ -72,13 +72,13 @@ The cockpit is a single Python process that serves a bundled Next.js static fron
 
 ## 2. The two ports
 
-### 2.1 `LLMChat` (US-07)
+### 2.1 `LLMChat` (UC-07)
 
-The cockpit's main outbound port. Methods: `list_models`, `loaded`, `chat_stream`, `pull_model`, `delete_model`. The full surface is in US-07's Functional Spec.
+The cockpit's main outbound port. Methods: `list_models`, `loaded`, `chat_stream`, `pull_model`, `delete_model`. The full surface is in UC-07's Functional Spec.
 
-The chat router (US-04), code router (US-05), dashboard router (US-02), and admin Ollama router (US-10) all depend on this port. There is **one** adapter in v0.1: `OllamaLLMChat`. The cockpit knows nothing else about Ollama's wire format outside `app/adapters/ollama_chat.py`.
+The chat router (UC-04), code router (UC-05), dashboard router (UC-02), and admin Ollama router (UC-10) all depend on this port. There is **one** adapter in v0.1: `OllamaLLMChat`. The cockpit knows nothing else about Ollama's wire format outside `app/adapters/ollama_chat.py`.
 
-### 2.2 `Telemetry` (US-02)
+### 2.2 `Telemetry` (UC-02)
 
 Optional outbound port. One method: `sample() -> GpuSnapshot | None`. `None` means "no telemetry available" — the dashboard renders the empty state.
 
@@ -88,7 +88,7 @@ One adapter in v0.1: `NvidiaSmiTelemetry`. If `nvidia-smi` is not on PATH, the a
 
 Three roles on a ladder: `chat < code < admin` (ADR-004). One column on `users`. The `require_role(min_role)` dependency is the **only** authorization gate.
 
-JWT carries `sub` (user id) only. Role is resolved from `users` at every request. Role flips by an admin (US-06) take effect immediately on the user's next request; no re-login required (ADR-004 §5).
+JWT carries `sub` (user id) only. Role is resolved from `users` at every request. Role flips by an admin (UC-06) take effect immediately on the user's next request; no re-login required (ADR-004 §5).
 
 ## 4. Data model
 
@@ -134,7 +134,7 @@ Per ADR-002 v1.1:
 
 - The Python wheel embeds `frontend_dist/` (built Next.js static export).
 - `cockpit-admin` is the one CLI: `init`, `serve`, `migrate`, `user-*`, `doctor`, `systemd-install`.
-- `init` (US-08) is idempotent and probes Ollama before doing any other work.
+- `init` (UC-08) is idempotent and probes Ollama before doing any other work.
 - `serve` runs `alembic upgrade head` on startup, then starts FastAPI; serves the embedded frontend at `/`, the API at `/api/*`.
 
 A second process / container is **not** required.
@@ -164,7 +164,7 @@ Public-Internet exposure is not in this project's scope. Reverse-proxy at the op
 ## 8. What this architecture deliberately does **not** include
 
 - **No upstream queue layer** in v0.1 (ADR-003 §4). If a deployment needs queue semantics for heavy GPU work, that is solved outside the cockpit — e.g. by AgenticBlox proxying Ollama and the cockpit pointing `COCKPIT_OLLAMA_URL` at the proxy.
-- **No model lifecycle controls in v0.1** (`pin`, `keep_alive`, `num_ctx` push). Defer to v0.2 ("Model Lifecycle"). v0.1 admin scope is user management (US-06) plus tagging / pull / delete (US-10).
+- **No model lifecycle controls in v0.1** (`pin`, `keep_alive`, `num_ctx` push). Defer to v0.2 ("Model Lifecycle"). v0.1 admin scope is user management (UC-06) plus tagging / pull / delete (UC-10).
 - **No external identity provider.** OAuth / SAML / OIDC are not in v0.1. Bcrypt + JWT in `HttpOnly` cookie is the floor.
 - **No multi-host topology.** One cockpit, one Ollama, one SQLite.
 - **No password reset over email.** Admin reset is the only path in v0.1.

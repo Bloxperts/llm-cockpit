@@ -10,11 +10,12 @@ The cockpit assumes you already have Ollama running. It does not install, manage
 
 ## What it does
 
-- **Dashboard.** What models Ollama is serving and which are currently loaded, recent calls with token counts and latency, optional GPU panel (when `nvidia-smi` is on PATH), Ollama-reachability badge.
+- **Dashboard with placement board.** Kanban-style zones — `GPU 0`, `GPU 1`, …, `Multi-GPU`, `On Demand`, `Available`. Admin drag-drops model cards to shape what's warm where; non-admin sees the board read-only. Each card shows VRAM, tag (chat / code / both), cold-load time, throughput tokens/s, and max context — populated by a "Test performance" harness any admin can run on the model. "+ Add model" pulls a model from the Ollama registry without leaving the page. GPU panel is optional (`nvidia-smi`).
 - **Chat.** Pick any chat-tagged model from your Ollama install and have a streaming conversation. Per-user history, per-conversation system prompt, code-block highlighting.
 - **Code.** Same shell as Chat, filtered to code-tagged models, with a coder-default system prompt and diff rendering.
 - **Admin (user management).** Add / delete users, set roles on a `chat < code < admin` ladder, reset passwords. Force first-login password change for any seeded or admin-created account.
-- **Admin (Ollama configuration).** Tag models `chat` / `code` / `both`, pull / delete models, edit the code-mode default system prompt, see per-model metrics + the audit log.
+- **Admin (Ollama configuration).** Tagging-heuristic editor (chat vs code), code-mode default system prompt, perf-test history per model, full audit log. Everyday lifecycle (place, pull, delete, perf-test) lives on the dashboard — this page is the deeper admin surface.
+- **LAN access.** Installer asks whether to bind to `127.0.0.1` only or `0.0.0.0`, so phones / tablets / other laptops on the same LAN can use the cockpit without a reverse proxy. HTTPS is out of scope for v0.1; for off-LAN access use a VPN (Tailscale / WireGuard) or a TLS terminator.
 
 ## Quick start (when v0.1 ships)
 

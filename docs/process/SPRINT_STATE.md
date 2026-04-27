@@ -7,99 +7,83 @@
 
 ## Current sprint
 
-**Sprint 1** — Architecture sprint.
-**Window:** 2026-04-27 (Mon, opened mid-week) → 2026-05-03 (Sun) — runs concurrent with the formal Sprint 0 review at the boundary.
-**Goal:** Lock the public-release framing, walk every user / functional / test spec to a coherent state, produce an Accepted architecture document. **No implementation in this sprint.**
+**Sprint 2** — First build sprint.
+**Window:** 2026-04-28 (Tue) → 2026-05-04 (Mon) — first build week.
+**Goal:** Land the install + login + first-login-change flow on the cockpit. End-of-sprint smoke: `pip install llm-cockpit && cockpit-admin init && cockpit-admin serve`, log in as `admin/ollama`, change password, see an empty dashboard. UC-07's `LLMChat` port + `OllamaLLMChat` adapter is built incrementally as a dependency of UC-08.
 
-### Architecture-sprint deliverables
+### Sprint 2 backlog
 
-| Artefact | Target status by 2026-05-03 |
-|----------|------------------------------|
-| Public release framing | ✅ ADR-003 Accepted |
-| Stack revision (pip + CLI, drop scheduler) | ✅ ADR-002 v1.1 Accepted |
-| Role ladder + permission model | ADR-004 Accepted |
-| `architecture/COMPONENTS.md` v1.0 (public framing) | Accepted |
-| `GOALS.md` rewritten for public audience | Accepted |
-| User Specs US-01 … US-10 | All in Review |
-| Functional Specs US-01 … US-10 | All in Review |
-| Test Specs US-01, US-08, US-09 (Sprint 2 candidates) | Review |
-| Test Specs US-02 … US-07, US-10 | Draft (filled at sprint start when story enters in-progress) |
-| DG-004 blocks on US-02 / US-07 / US-10 | Present |
-| LL-INDEX entry on the framing flip | Drafted |
+| UC | Title | Functional Spec | Plan |
+|----|-------|-----------------|------|
+| UC-08 | First-run installation + bootstrap | Accepted | Build pip wheel layout (cli.py, main.py, alembic), implement `cockpit-admin {init, serve, doctor, migrate}`, wire bind-interface prompt, seed admin, snapshot model tags. |
+| UC-07 | Ollama integration (`LLMChat` port) | Accepted | Build the port + `OllamaLLMChat` adapter + `FakeLLMChat`. UC-08's probe consumes `list_models()` only; the rest of the surface lands as Sprint 4 needs it. |
+| UC-09 | First-login forced password change | Accepted | Build `current_user_must_be_settled` dependency, `POST /api/auth/change-password`, validation rules, frontend `/change-password` page. |
+| UC-01 | User logs in | Accepted | Build `routers/auth.py`, JWT issuance + cookie, `current_user` dep, `require_role`, login audit. Role-aware redirect. |
 
-### v0.1 user-story set (10)
+End-of-sprint review on 2026-05-04 (Mon).
 
-| US | Title | Sprint plan | User Spec | Functional Spec | Test Spec |
-|----|-------|-------------|-----------|-----------------|-----------|
-| US-01 | User logs in | 2 | Review | Review | Review |
-| US-02 | Live dashboard (Ollama + optional GPU) | 3 | Review | Review | Draft |
-| US-03 | Dashboard history (24 h, 7 d) | 5 | Review | Review | Draft |
-| US-04 | Chat interface (chat-tagged models) | 4 | Review | Review | Draft |
-| US-05 | Code interface (code-tagged models) | 4 | Review | Review | Draft |
-| US-06 | Admin: user management | 6 | Review | Review | Draft |
-| US-07 | Ollama integration (`LLMChat` port) | 1 (design) → 2 (build) | Review | Review | Review |
-| US-08 | First-run installation + bootstrap | 2 | Review | Review | Review |
-| US-09 | First-login forced password change | 2 | Review | Review | Review |
-| US-10 | Admin: Ollama configuration + metrics | 7 | Review | Review | Draft |
+### Sprint 2 review checklist
 
-### Decision Guides binding the architecture sprint
+- [ ] All four functional specs reach `Done (technical)`.
+- [ ] `pytest --cov` ≥ 90 % on `cockpit/cli.py`, `cockpit/services/users.py`, `cockpit/routers/auth.py`, `cockpit/adapters/ollama_chat.py`.
+- [ ] Smoke (manual): clean Mac + clean Ubuntu run `pip install` → `init` → `serve` → log in → change password → land on `/dashboard` (empty board).
+- [ ] LL entries written for non-trivial discoveries.
+- [ ] Sprint Review protocol filed at `process/reviews/SPRINT-02-REVIEW.md`.
+- [ ] Chris explicitly accepts the four UCs `Done → User Accepted`.
 
-- **DG-004** (port or adapter) — runs on US-02, US-07, US-10 (only these cross the platform boundary in v0.1).
-- DG-001 / DG-002 / DG-003 — N/A (no agents; delivery form decided once in ADR-002).
+### Out of scope for Sprint 2
 
-### Out of scope for Sprint 1
-
-- Any code changes beyond the methodology-bootstrap commits already on `feature/SPRINT-0-methodology-bootstrap`.
-- Test Specs for US-02 / US-03 / US-04 / US-05 / US-06 / US-10 (filled when their sprint opens; Draft is acceptable through Sprint 1).
-- Any v0.2 features (Model Lifecycle pull/delete, conversation export, A/B compare, MCP host).
-
-### Sprint 1 review checklist (run on Sunday 2026-05-03)
-
-- [ ] ADR-003, ADR-004 Accepted in vault and mirrored to `/docs/decisions/`.
-- [ ] ADR-002 at v1.1 Accepted.
-- [ ] `GOALS.md` and `README.md` reflect public framing — no Bloxperts-internal references in the body.
-- [ ] All 10 User / Functional Specs at status Review.
-- [ ] Test Specs for the Sprint 2 candidates (US-08, US-09, US-01, US-07) at Review.
-- [ ] `architecture/COMPONENTS.md` Accepted.
-- [ ] DG-004 blocks present on US-02, US-07, US-10.
-- [ ] LL entry drafted for "Architecture framing flipped from internal-Neuroforge to public release".
-- [ ] Chris explicitly accepts the four ADRs and the architecture document.
+- The placement board UI / drag-drop (UC-02 dashboard front-end).
+- The performance harness implementation (server-side wired in Sprint 3 with UC-02).
+- Chat / Code pages (Sprint 4).
+- Admin user management UI (Sprint 6).
+- Admin Ollama config page (Sprint 7).
 
 ---
 
 ## Sprint history
 
-### Sprint 0 — Methodology bootstrap
+### Sprint 1 — Architecture sprint (closed 2026-04-27)
 
-**Window:** 2026-04-27 (Mon) — single-day sprint, kept short because it runs alongside Sprint 1.
+**Window:** 2026-04-27 (single-day; ran alongside Sprint 0 boundary).
 **Outcome:** ✅ closed.
 
 Delivered:
 
-- `process/PROCESS.md` v1.0 Accepted (mirrors AgenticBlox PROCESS v2.0 with four cockpit deltas).
-- `design-principles/DP-INDEX.md` v1.0 Accepted (Adopt / Defer / Skip mapping).
-- `decisions/ADR-001` (mirror process), `decisions/ADR-002` v1.0 (stack + delivery form), `decisions/ADR-INDEX.md`.
-- `lessons-learned/LL-INDEX.md` placeholder.
-- `specs/` restructured into three-doc layout (`user/`, `functional/`, `test/`).
-- Repo: `develop` branch, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `scripts/sync-docs-from-vault.sh`, `/docs` mirror first run, two commits on `feature/SPRINT-0-methodology-bootstrap`.
+- ADR-003 Accepted (public release framing).
+- ADR-004 Accepted (role ladder `chat < code < admin`).
+- ADR-005 Accepted (per-model lifecycle + perf harness back in v0.1; supersedes ADR-003 §6).
+- ADR-002 v1.1 Accepted (pip + CLI distribution; scheduler dropped).
+- `architecture/COMPONENTS.md` v1.0 Accepted.
+- `GOALS.md` v1.0 Accepted (public framing + LAN access + iPhone v2 idea).
+- `README.md` v0.2 (vault) updated.
+- 10 use cases written and Accepted (UC-01..UC-10) — moved from `specs/user/` to `use-cases/` to match AgenticBlox layout.
+- 10 functional specs Accepted.
+- Test specs for Sprint-2 candidates (UC-01, UC-07, UC-08, UC-09) at Review; the rest at Draft (filled when their sprint opens).
+- Repo: methodology-bootstrap commits + Sprint 1 commits on `feature/SPRINT-0-methodology-bootstrap`.
 
-Lessons: the original Spring 0 plan had US-01 going through `Draft → Review → Accepted` in this window. ADR-003 (public framing) intervened mid-sprint and the spec was held at `Review` rather than rushed to `Accepted` under the wrong framing. This is **expected** Spec-First behaviour, not a process miss.
+Lessons:
+
+- Architecture flipped twice mid-sprint (Neuroforge-internal → public framing → public + back-ported model lifecycle). Each flip ended in an ADR; the spec set caught up rather than the other way round. Spec-First held.
+- The `specs/user/` → `use-cases/` rename was Chris's correction — AgenticBlox's actual folder layout is the canonical reference; the cockpit aligned mid-sprint.
+
+### Sprint 0 — Methodology bootstrap (closed 2026-04-27)
+
+**Outcome:** ✅ closed.
+
+Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learned/LL-INDEX, restructured specs into three-doc form, repo `develop` branch, `CONTRIBUTING.md`, PR template, `scripts/sync-docs-from-vault.sh`, `/docs` mirror.
 
 ---
 
-## Backlog (post-Sprint-1)
+## Backlog (post-Sprint-2)
 
-Implementation order proposed:
-
-1. **Sprint 2** — US-08 (installer + bootstrap) → US-09 (first-login change) → US-01 (login). End of Sprint 2 = a freshly-installed cockpit lets `admin` log in, change password, and see an empty dashboard.
-2. **Sprint 3** — US-02 (live dashboard) + telemetry sampler.
-3. **Sprint 4** — US-04 (chat) and US-05 (code) together — they share machinery.
-4. **Sprint 5** — US-03 (dashboard history).
-5. **Sprint 6** — US-06 (user management).
-6. **Sprint 7** — US-10 (Ollama configuration + metrics).
-7. **v0.2 backlog** — Model Lifecycle (pin/unpin/keep_alive), conversation export, A/B compare, pluggable LLMChat adapter, MCP tool-call display.
-
-US-07 (Ollama integration) is treated as cross-cutting: the `LLMChat` port + `OllamaLLMChat` adapter is designed in Sprint 1 and built **incrementally** alongside US-08 in Sprint 2 (the adapter is the bridge the chat / code routers will need in Sprint 4).
+1. **Sprint 3** — UC-02 (live dashboard + placement board) + perf harness back-end + telemetry sampler.
+2. **Sprint 4** — UC-04 (chat) and UC-05 (code) — share machinery.
+3. **Sprint 5** — UC-03 (dashboard history).
+4. **Sprint 6** — UC-06 (admin user management).
+5. **Sprint 7** — UC-10 (admin Ollama config — heuristic editor, perf history, audit log).
+6. **v0.2 backlog** — pluggable LLMChat adapter, conversation export, A/B compare, MCP tool-call display, telemetry adapters beyond `nvidia-smi`, multi-Ollama topology.
+7. **v2 ideas** — iPhone client over VPN, voice input.
 
 ---
 
@@ -107,17 +91,15 @@ US-07 (Ollama integration) is treated as cross-cutting: the `LLMChat` port + `Ol
 
 | Date | Item | From | To | By |
 |------|------|------|----|----|
-| 2026-04-27 | process/PROCESS.md | — | Accepted v1.0 | Chris |
-| 2026-04-27 | DP-INDEX.md | — | Accepted v1.0 | Chris |
-| 2026-04-27 | ADR-001 | — | Accepted | Chris |
-| 2026-04-27 | ADR-002 | — | Accepted v1.0 | Chris |
 | 2026-04-27 | Sprint 0 | Open | Closed | Chris |
 | 2026-04-27 | ADR-003 (public framing) | — | Accepted | Chris |
-| 2026-04-27 | ADR-002 | Accepted v1.0 | Accepted v1.1 | Chris |
-| 2026-04-27 | Sprint 1 | — | Open | Chris |
+| 2026-04-27 | ADR-004 (role ladder) | — | Accepted | Chris |
+| 2026-04-27 | ADR-005 (per-model lifecycle in v0.1) | — | Accepted | Chris |
+| 2026-04-27 | ADR-002 v1.0 | Accepted | Accepted v1.1 | Chris |
 | 2026-04-27 | GOALS.md | Draft | Accepted v1.0 | Chris |
-| 2026-04-27 | SPEC-001 (US-01 functional) | Draft | Review | Claude |
-| 2026-04-27 | US-01 user spec | Draft | Review | Claude |
-| 2026-04-27 | US-01 test spec | Draft | Review | Claude |
-
-(rows added as transitions happen)
+| 2026-04-27 | architecture/COMPONENTS.md | Draft | Accepted v1.0 | Chris |
+| 2026-04-27 | UC-01..10 use cases | Review | Accepted | Chris |
+| 2026-04-27 | UC-01..10 functional specs | Review | Accepted | Chris |
+| 2026-04-27 | UC-01, UC-07, UC-08, UC-09 test specs | Review | Accepted | Chris |
+| 2026-04-27 | Sprint 1 | Open | Closed | Chris |
+| 2026-04-28 | Sprint 2 | — | Open | Chris |

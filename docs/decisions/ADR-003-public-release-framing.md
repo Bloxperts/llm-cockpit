@@ -53,7 +53,7 @@ The cockpit becomes a portable, public release. The following framing applies fr
 ### 6. Admin scope shrinks
 
 - v0.1 admin = **user management only**. Add user, delete user, set role (`user` / `admin`), reset password.
-- Pin / unpin / `num_ctx` / `keep_alive` / power-cap / vLLM controls move to v0.2 (working name: "Model Lifecycle" admin, US-V2). The original SPEC-006 content is preserved as an appendix on the new US-06 functional spec for reference; it is not implemented in v0.1.
+- Pin / unpin / `num_ctx` / `keep_alive` / power-cap / vLLM controls move to v0.2 (working name: "Model Lifecycle" admin, US-V2). The original SPEC-006 content is preserved as an appendix on the new UC-06 functional spec for reference; it is not implemented in v0.1.
 
 ### 7. Hard-coded model names removed
 
@@ -76,8 +76,8 @@ The cockpit becomes a portable, public release. The following framing applies fr
 
 **Negative**
 
-- US-06 (admin controls) is rewritten. The existing draft content for pin/unpin/num_ctx is preserved as an appendix but loses its v0.1 status.
-- US-07 is rewritten from "scheduler routing" to "Ollama integration". The DG-004 block is simpler but the spec is essentially new.
+- UC-06 (admin controls) is rewritten. The existing draft content for pin/unpin/num_ctx is preserved as an appendix but loses its v0.1 status.
+- UC-07 is rewritten from "scheduler routing" to "Ollama integration". The DG-004 block is simpler but the spec is essentially new.
 - The pip-distributable shape requires the Next.js frontend to be built and bundled into the Python package. This is well-trodden but new for the cockpit; it is the architecture sprint's job to figure out the build.
 
 **Neutral**
@@ -96,4 +96,4 @@ The cockpit becomes a portable, public release. The following framing applies fr
 ## Follow-up
 
 - Sprint 1 (architecture) walks all 9 functional specs to `Accepted` and produces a rewritten `architecture/COMPONENTS.md` reflecting this framing.
-- Sprint 2 (first build) implements US-08 (installer + bootstrap) → US-09 (first-login password change) → US-01 (login). After that we can chain US-02 (dashboard) and US-04 (chat).
+- Sprint 2 (first build) implements UC-08 (installer + bootstrap) → UC-09 (first-login password change) → UC-01 (login). After that we can chain UC-02 (dashboard) and UC-04 (chat).
