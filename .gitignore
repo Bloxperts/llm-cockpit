@@ -26,6 +26,9 @@ out/
 *.swp
 .DS_Store
 
+# SMB tombstones (when the vault is on an SMB mount)
+.smbdelete*
+
 # Local data
 .env
 .env.local
