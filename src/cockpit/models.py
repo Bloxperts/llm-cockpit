@@ -1,9 +1,9 @@
 """SQLAlchemy ORM for the v0.1 schema.
 
 UC-08 Slice A defined six tables: `users`, `login_audit`, `model_tags`,
-`settings`, `model_config`, `model_perf`. UC-02 (Sprint 3) adds
+`settings`, `model_config`, `model_perf`. UC-02 (Sprint 3) added
 `metrics_snapshot` (GPU sampler) and `admin_audit` (state-changing admin
-actions). `conversations` and `messages` land with UC-04 / UC-05.
+actions). UC-04 / UC-05 (Sprint 4) add `conversations` and `messages`.
 
 ADR-004 (role ladder), ADR-005 (per-model lifecycle), and COMPONENTS.md §4 are
 the governing references.
@@ -17,6 +17,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -151,6 +152,76 @@ class MetricsSnapshot(Base):
     __table_args__ = (
         Index("idx_metrics_snapshot_ts", "ts"),
         Index("idx_metrics_snapshot_gpu_ts", "gpu_index", "ts"),
+    )
+
+
+class Conversation(Base):
+    """UC-04 / UC-05 — one row per chat or code conversation.
+
+    `mode` discriminates: 'chat' or 'code'. Defaults to 'chat'.
+    `system_prompt` is per-conversation (UC-04 §Persistence + UC-05 default).
+    `model` is the originally-picked model; mid-conversation model switches
+    are recorded on `messages.model` rather than mutating this column.
+    """
+
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="chat")
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp()
+    )
+
+    __table_args__ = (
+        CheckConstraint("mode IN ('chat', 'code')", name="ck_conversations_mode"),
+        Index("idx_conversations_user_mode", "user_id", "mode"),
+        Index("idx_conversations_user_updated", "user_id", "updated_at"),
+    )
+
+
+class Message(Base):
+    """UC-04 / UC-05 — one row per turn in a conversation.
+
+    `role` is 'user' / 'assistant' / 'system'. `model` is the model that
+    *produced* this message (assistant rows) or that was active when the
+    user typed (user rows — handy for analytics).
+    `usage_in` / `usage_out` / `gen_tps` / `latency_ms` are extracted from
+    the final NDJSON chunk per UC-04 AC-9; `error` is `'stream_aborted'`
+    when the stream was cut mid-emission.
+    """
+
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("conversations.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    usage_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gen_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp()
+    )
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system')", name="ck_messages_role"
+        ),
+        Index("idx_messages_conversation_ts", "conversation_id", "ts"),
     )
 
 

@@ -1,7 +1,9 @@
-<!-- Status: Accepted | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-28 -->
 # UC-04 · Functional Spec — Chat interface
 
-**Status:** Accepted
+**Status:** Done (technical)
+<!-- VAULT-SYNC: backend implementation landed on develop in feature/UC-04-UC-05-chat-code (Sprint 4). Status flipped Accepted → In Progress → Done (technical). The deferred UC-07 chat_stream NDJSON wire-shape contract test is also resolved in this slice. Frontend (the React/dnd-kit version) ships in Slice B of this branch. Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off on Neuroforge. -->
+
 **Depends on:** UC-01 (login), UC-07 (Ollama integration via `LLMChat` port), ADR-004 (role gate; chat-tagged picker).
 **Min role:** `chat`.
 **User Spec:** [`../../use-cases/UC-04-chat-page.md`](../../use-cases/UC-04-chat-page.md)
