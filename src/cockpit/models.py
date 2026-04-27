@@ -77,7 +77,7 @@ class ModelTag(Base):
 
     __table_args__ = (
         CheckConstraint("tag IN ('chat', 'code', 'both')", name="ck_model_tags_tag"),
-        CheckConstraint("source IN ('heuristic', 'admin')", name="ck_model_tags_source"),
+        CheckConstraint("source IN ('auto', 'override')", name="ck_model_tags_source"),
     )
 
 

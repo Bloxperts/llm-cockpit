@@ -69,7 +69,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("tag IN ('chat', 'code', 'both')", name="ck_model_tags_tag"),
         sa.CheckConstraint(
-            "source IN ('heuristic', 'admin')", name="ck_model_tags_source"
+            "source IN ('auto', 'override')", name="ck_model_tags_source"
         ),
     )
 

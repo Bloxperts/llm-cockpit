@@ -59,7 +59,7 @@ def snapshot_tags(
             out[name] = existing.tag
             continue
         decided = tag_for(name, patterns)
-        session.add(ModelTag(model=name, tag=decided, source="heuristic"))
+        session.add(ModelTag(model=name, tag=decided, source="auto"))
         out[name] = decided
     session.flush()
     return out

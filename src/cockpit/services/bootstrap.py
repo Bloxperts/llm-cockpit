@@ -133,15 +133,15 @@ def _resolve_bind(
     stdin=None,
     stdout=None,
 ) -> str:
-    if stdin is None:
-        stdin = sys.stdin
-    if stdout is None:
-        stdout = sys.stdout
     """Bind-interface resolution per UC-08 AC-12.
 
     Order: --bind > COCKPIT_HOST env > existing config > interactive prompt
     (when allowed) > default 127.0.0.1.
     """
+    if stdin is None:
+        stdin = sys.stdin
+    if stdout is None:
+        stdout = sys.stdout
     if opt.bind:
         return _validate_bind(opt.bind)
     env_host = os.environ.get("COCKPIT_HOST")
