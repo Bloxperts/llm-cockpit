@@ -31,11 +31,18 @@ from sqlalchemy.orm import Session
 from cockpit.config import Settings
 from cockpit.deps import get_session, get_settings
 from cockpit.models import LoginAudit, User
-from cockpit.schemas import LoginRequest, LoginResponse, MeResponse
+from cockpit.schemas import (
+    ChangePasswordRequest,
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+)
 from cockpit.services.users import (
+    DEFAULT_ADMIN_PASSWORD,
     get_user_by_id,
     get_user_by_username,
     update_last_login,
+    update_password,
     verify_password,
 )
 
@@ -226,6 +233,25 @@ def require_role(min_role: str):
     return dep
 
 
+def current_user_must_be_settled(
+    user: User = Depends(current_user),
+) -> User:
+    """UC-09 dependency: refuse every protected route except `/me` and
+    `/change-password` until the user has set a real password.
+
+    Returns 409 with `{"detail": "must_change_password"}` and
+    `WWW-Authenticate: ChangePassword` so external API clients can detect
+    the state.
+    """
+    if user.must_change_password:
+        raise HTTPException(
+            409,
+            detail="must_change_password",
+            headers={"WWW-Authenticate": "ChangePassword"},
+        )
+    return user
+
+
 # --- Endpoints -------------------------------------------------------------
 
 
@@ -295,26 +321,68 @@ def me(user: User = Depends(current_user)) -> MeResponse:
 def logout(
     request: Request,
     response: Response,
+    user: User = Depends(current_user_must_be_settled),
+    db: Session = Depends(get_session),
+) -> dict:
+    """Clear the cookie + write `login_audit(action='logout')`.
+
+    Per UC-09: gated by `current_user_must_be_settled`. A user who hasn't
+    finished their forced password change can't yet sign out — they'd
+    typically clear the cookie client-side anyway. The two protected
+    routes that **don't** require settled status are `/me` and
+    `/change-password`.
+    """
+    _audit(db, username=user.username, success=True, source_ip=_client_ip(request), action="logout")
+    db.commit()
+    _clear_cookie(response)
+    return {}
+
+
+# --- UC-09: change-password ----------------------------------------------
+
+
+@router.post("/change-password")
+def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(current_user),  # NOT settled — this IS the settle gate
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    """Clear the cookie unconditionally + write a best-effort audit row. If
-    the cookie is already invalid we still succeed — the user wants to be
-    signed out, that's the contract.
+    """UC-09. Server-side validation:
+
+    - new_password == confirm_password (else 400 passwords_dont_match).
+    - len(new_password) >= 8 (else 400 too_short).
+    - new_password != literal "ollama" (else 400 cannot_reuse_default).
+
+    On success: bcrypt-hash, flip must_change_password=0, stamp
+    password_changed_at, write login_audit(action='password_changed').
+    Issue a fresh JWT cookie too so the now-settled user gets a normal-aged
+    session without re-entering their old password.
     """
-    username: str | None = None
-    token = request.cookies.get(COOKIE_NAME)
-    if token:
-        try:
-            payload = _decode_token(token, settings.jwt_secret)
-            sub = payload.get("sub")
-            if sub:
-                u = get_user_by_id(db, int(sub))
-                if u is not None:
-                    username = u.username
-        except (JWTError, ValueError, TypeError):
-            pass
-    _audit(db, username=username, success=True, source_ip=_client_ip(request), action="logout")
+    if body.new_password != body.confirm_password:
+        raise HTTPException(400, detail="passwords_dont_match")
+    # Literal-default check fires *before* the length check so submitting
+    # "ollama" produces a precise error message rather than a confusing
+    # "too short" (which is also true — len('ollama') == 6 — but unhelpful).
+    if body.new_password == DEFAULT_ADMIN_PASSWORD:
+        raise HTTPException(400, detail="cannot_reuse_default")
+    if len(body.new_password) < 8:
+        raise HTTPException(400, detail="too_short", headers={"X-Password-Min": "8"})
+
+    update_password(db, user, body.new_password, bcrypt_cost=settings.bcrypt_cost)
+    _audit(
+        db,
+        username=user.username,
+        success=True,
+        source_ip=_client_ip(request),
+        action="password_changed",
+    )
     db.commit()
-    _clear_cookie(response)
+
+    # Re-issue cookie so the user gets a fresh full-TTL session post-change.
+    ttl = settings.session_days * 86400
+    token = _create_token(user.id, ttl, settings.jwt_secret)
+    _set_cookie(response, token, ttl)
     return {}
