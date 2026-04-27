@@ -173,3 +173,59 @@ def test_frontend_dist_dir_is_under_package() -> None:
     assert (FRONTEND_DIST_DIR / "login" / "index.html").is_file()
     assert (FRONTEND_DIST_DIR / "change-password" / "index.html").is_file()
     assert (FRONTEND_DIST_DIR / "dashboard" / "index.html").is_file()
+
+
+def test_create_app_with_no_settings_uses_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Calling create_app() with no settings should fall back to env / defaults.
+
+    We keep this fast by skipping the startup probe and DB upgrade — the only
+    thing we're exercising is that the no-settings code path doesn't crash.
+    """
+    # Point COCKPIT_DATA_DIR somewhere ephemeral so we don't accidentally
+    # touch the developer's real ~/.local/share/llm-cockpit.
+    monkeypatch.setenv("COCKPIT_DATA_DIR", str(tmp_path / "no-settings"))
+    app = create_app(skip_db_upgrade=True, skip_startup_probe=True)
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+
+
+def test_startup_probe_handles_response_error(
+    initialised_settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If Ollama returns a 5xx during the startup probe, we log a warning
+    and continue — same as the unreachable branch.
+    """
+    from cockpit.ports.llm_chat import OllamaResponseError
+
+    fake = FakeLLMChat(
+        raise_on_list_models=OllamaResponseError(503, "service unavailable")
+    )
+    app = create_app(initialised_settings, chat_factory=lambda url: fake)
+    with caplog.at_level("WARNING", logger="cockpit.main"):
+        with TestClient(app) as client:
+            assert client.get("/healthz").status_code == 200
+    assert any(
+        "returned an error" in rec.getMessage() for rec in caplog.records
+    )
+
+
+def test_startup_probe_calls_aclose_when_present(
+    initialised_settings: Settings,
+) -> None:
+    """If the chat object exposes `aclose`, lifespan should await it."""
+
+    closed = {"called": False}
+
+    class FakeWithClose:
+        async def list_models(self):
+            return []
+
+        async def aclose(self):
+            closed["called"] = True
+
+    app = create_app(initialised_settings, chat_factory=lambda url: FakeWithClose())
+    with TestClient(app):
+        pass
+    assert closed["called"] is True
