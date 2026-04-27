@@ -308,10 +308,13 @@ def test_logout_clears_cookie(client: TestClient, seeded_users: dict) -> None:
     assert r.status_code == 401
 
 
-def test_logout_without_cookie_still_succeeds(client: TestClient) -> None:
-    """Logout is idempotent — clearing an already-empty session is fine."""
+def test_logout_without_cookie_returns_401(client: TestClient) -> None:
+    """Logout is gated by current_user_must_be_settled (UC-09); without a
+    cookie the user is unauthenticated. The browser swallows the response
+    and redirects anyway — see frontend_dist/dashboard/index.html.
+    """
     r = client.post("/api/auth/logout")
-    assert r.status_code == 200
+    assert r.status_code == 401
 
 
 # --- T-11 audit ---------------------------------------------------------
