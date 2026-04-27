@@ -167,8 +167,11 @@ def _check_db_schema(data_dir: Path) -> tuple[bool, str]:
 
 
 def _check_ollama(url: str) -> tuple[bool, str]:
+    """Probe Ollama via the `LLMChat` port (UC-07). Hard failure on either
+    `OllamaUnreachableError` or `OllamaResponseError`.
+    """
     try:
-        models = probe_ollama(url, timeout=2.0)
+        models = probe_ollama(url)
     except BootstrapError as exc:
         return False, str(exc).splitlines()[0]
     return True, f"ollama reachable at {url} ({len(models)} models)"
