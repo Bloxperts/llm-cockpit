@@ -730,3 +730,96 @@ def test_404_paths_for_missing_conversation(settings: Settings, seeded: dict) ->
         assert client.delete("/api/chat/9999").status_code == 404
         assert client.post("/api/chat/9999/stream", json={"content": "x"}).status_code == 404
         assert client.post("/api/chat/9999/regenerate").status_code == 404
+
+
+# =========================================================================
+# Sprint 5 UX — think=True option pass-through + num_ctx_default
+# =========================================================================
+
+
+def test_think_true_passes_through_to_chat_stream_options(
+    settings: Settings, seeded: dict
+) -> None:
+    """`StreamRequest.think=True` should land in `options={'think': True}`
+    on the LLMChat.chat_stream call."""
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        tokens=["ok"],
+        final_chunk=_final_chunk(),
+    )
+    client = _build_client(settings, chat=chat)
+    with client:
+        _login(client, seeded, "carol")
+        cid = client.post("/api/chat", json={"model": "m"}).json()["conversation_id"]
+        with client.stream(
+            "POST",
+            f"/api/chat/{cid}/stream",
+            json={"content": "hi", "think": True},
+        ) as r:
+            list(r.iter_lines())
+
+    call = chat.calls_of("chat_stream")[0]
+    assert call["options"] == {"think": True}
+
+
+def test_think_false_omits_options_dict(settings: Settings, seeded: dict) -> None:
+    """`think=False` (the default) should leave the options dict empty/None."""
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        tokens=["ok"],
+        final_chunk=_final_chunk(),
+    )
+    client = _build_client(settings, chat=chat)
+    with client:
+        _login(client, seeded, "carol")
+        cid = client.post("/api/chat", json={"model": "m"}).json()["conversation_id"]
+        with client.stream(
+            "POST", f"/api/chat/{cid}/stream", json={"content": "hi"}
+        ) as r:
+            list(r.iter_lines())
+    call = chat.calls_of("chat_stream")[0]
+    # No `think` flag → options is None (the helper returns None when empty).
+    assert call["options"] is None
+
+
+def test_conversation_detail_includes_num_ctx_default(
+    settings: Settings, seeded: dict
+) -> None:
+    """When a model_config row exists with num_ctx_default set, the
+    ConversationDetail response surfaces it."""
+    from cockpit.models import ModelConfig
+
+    engine = make_engine(settings.db_url)
+    factory = make_session_factory(engine)
+    try:
+        with factory() as session:
+            session.add(
+                ModelConfig(
+                    model="gemma3:27b",
+                    placement="available",
+                    num_ctx_default=32768,
+                )
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+    client = _build_client(settings)
+    with client:
+        _login(client, seeded, "carol")
+        r = client.post("/api/chat", json={"model": "gemma3:27b"})
+        cid = r.json()["conversation_id"]
+        detail = client.get(f"/api/chat/{cid}").json()
+    assert detail["num_ctx_default"] == 32768
+
+
+def test_conversation_detail_num_ctx_default_null_when_no_row(
+    settings: Settings, seeded: dict
+) -> None:
+    """Conversations with no model_config row return num_ctx_default=null."""
+    client = _build_client(settings)
+    with client:
+        _login(client, seeded, "carol")
+        cid = client.post("/api/chat", json={"model": "untracked-model"}).json()["conversation_id"]
+        detail = client.get(f"/api/chat/{cid}").json()
+    assert detail["num_ctx_default"] is None

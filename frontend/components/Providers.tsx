@@ -5,9 +5,16 @@ import { useEffect, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
 import { Me, useAuthStore } from "@/lib/auth-store";
+import { applyTheme, getEffectiveTheme } from "@/lib/dark-mode";
 
 function AuthBootstrap({ children }: { children: React.ReactNode }) {
   const { setMe, reset, setLoading } = useAuthStore();
+
+  // Apply the effective theme on first paint so the page doesn't flash
+  // light → dark on initial render. Runs once.
+  useEffect(() => {
+    applyTheme(getEffectiveTheme());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

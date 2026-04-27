@@ -127,6 +127,7 @@ async def stream_reply(
     llm: LLMChat,
     session: Session,
     settings: Settings,
+    options: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict]:
     """Run one user→assistant turn through the LLMChat port.
 
@@ -141,6 +142,10 @@ async def stream_reply(
                                     gen_tps}}            once on done
         {"event": "done",  "data": {message_id: int}}    once
         {"event": "error", "data": {code, message}}      on upstream failure
+
+    `options` is passed through verbatim to `LLMChat.chat_stream(options=...)`.
+    Callers thread per-request flags (e.g. Sprint 5's `think: true`) here.
+    Models that don't recognise an option ignore it (Ollama's behaviour).
     """
     _ = settings  # currently unused; reserved for future per-call options
     model = conversation.model or "default"
@@ -164,7 +169,9 @@ async def stream_reply(
 
     t0 = time.monotonic()
     try:
-        async for chunk in llm.chat_stream(model=model, messages=history):
+        async for chunk in llm.chat_stream(
+            model=model, messages=history, options=options or None
+        ):
             # Stream the delta to the client; Ollama may send empty deltas on
             # the final chunk — only forward non-empty ones to keep SSE quiet.
             if chunk.delta:

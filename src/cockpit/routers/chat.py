@@ -166,6 +166,8 @@ def _serialize_conversation_summary(
 def _serialize_conversation_detail(
     session: Session, c: Conversation
 ) -> ConversationDetail:
+    from cockpit.models import ModelConfig
+
     msgs = list(
         session.execute(
             select(Message)
@@ -173,6 +175,16 @@ def _serialize_conversation_detail(
             .order_by(Message.ts, Message.id)
         ).scalars()
     )
+    # Sprint 5 UX (Feature 5 — token counter): join the model_config row
+    # for the conversation's current model. None if no row exists; the
+    # frontend falls back to a default ctx (8192).
+    num_ctx_default: int | None = None
+    if c.model:
+        cfg = session.execute(
+            select(ModelConfig).where(ModelConfig.model == c.model)
+        ).scalar_one_or_none()
+        if cfg is not None:
+            num_ctx_default = cfg.num_ctx_default
     return ConversationDetail(
         id=c.id,
         mode=c.mode,
@@ -181,6 +193,7 @@ def _serialize_conversation_detail(
         system_prompt=c.system_prompt,
         created_at=c.created_at.isoformat() if c.created_at else "",
         updated_at=c.updated_at.isoformat() if c.updated_at else "",
+        num_ctx_default=num_ctx_default,
         messages=[_serialize_message(m) for m in msgs],
     )
 
@@ -270,6 +283,17 @@ def _delete_conversation(session: Session, conversation: Conversation) -> None:
     session.flush()
 
 
+def _options_from_stream_request(body: StreamRequest) -> dict[str, Any] | None:
+    """Translate the cockpit-level `StreamRequest` into the Ollama `options`
+    dict that `LLMChat.chat_stream` forwards. Sprint 5 UX (Feature 4):
+    `think: true` enables extended reasoning on supported models.
+    """
+    options: dict[str, Any] = {}
+    if body.think:
+        options["think"] = True
+    return options or None
+
+
 async def _stream_response(
     *,
     user: User,
@@ -278,6 +302,7 @@ async def _stream_response(
     request: Request,
     settings: Settings,
     chat_factory,
+    options: dict[str, Any] | None = None,
 ) -> EventSourceResponse:
     """Build the SSE response. The actual generator owns its own session +
     LLMChat adapter so it doesn't compete with FastAPI's per-request
@@ -306,6 +331,7 @@ async def _stream_response(
                     llm=chat,
                     session=session,
                     settings=settings,
+                    options=options,
                 ):
                     yield event
         finally:
@@ -384,6 +410,7 @@ async def stream_chat_reply(
     )
     if conv is None:
         raise HTTPException(404, detail="conversation_not_found")
+    options = _options_from_stream_request(body)
     return await _stream_response(
         user=user,
         conversation=conv,
@@ -391,6 +418,7 @@ async def stream_chat_reply(
         request=request,
         settings=settings,
         chat_factory=chat_factory,
+        options=options,
     )
 
 
