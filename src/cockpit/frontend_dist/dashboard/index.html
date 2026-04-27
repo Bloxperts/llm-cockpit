@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dashboard — LLM Cockpit</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    h1 { font-size: 1.25rem; margin: 0; }
+    button { padding: 0.4rem 0.9rem; cursor: pointer; border: 1px solid #999; border-radius: 4px; background: #fff; font: inherit; }
+    .card { margin-top: 2rem; padding: 1.25rem; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+    dt { font-weight: 600; color: #555; }
+    .empty { color: #777; font-style: italic; }
+    .err { color: #b00020; }
+    p.note { color: #555; font-size: 0.875rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LLM Cockpit — Dashboard <span style="font-weight:400;color:#666">(Sprint 2 placeholder)</span></h1>
+    <button id="logout" type="button">Log out</button>
+  </header>
+
+  <section class="card" id="me-card">
+    <p class="empty">Loading your profile…</p>
+  </section>
+
+  <section class="card">
+    <p class="empty">Live placement board, GPU panel, and recent calls land in Sprint 3 (UC-02).</p>
+  </section>
+
+  <p class="note">Sprint 2 placeholder UI. Sprint 4 replaces this with the real Next.js shell.</p>
+
+  <script>
+    const meCard = document.getElementById('me-card');
+    const logoutBtn = document.getElementById('logout');
+
+    async function loadMe() {
+      let r;
+      try {
+        r = await fetch('/api/auth/me', { credentials: 'same-origin' });
+      } catch (_e) {
+        meCard.innerHTML = '<p class="err">Network error talking to /api/auth/me.</p>';
+        return;
+      }
+      if (r.status === 401) {
+        window.location.replace('/login/');
+        return;
+      }
+      if (r.status === 409) {
+        window.location.replace('/change-password/');
+        return;
+      }
+      if (r.status !== 200) {
+        meCard.innerHTML = '<p class="err">Unexpected response: ' + r.status + '</p>';
+        return;
+      }
+      const me = await r.json();
+      meCard.innerHTML =
+        '<dl>' +
+        '<dt>Username</dt><dd>' + escapeHtml(me.username) + '</dd>' +
+        '<dt>Role</dt><dd>' + escapeHtml(me.role) + '</dd>' +
+        '<dt>User id</dt><dd>' + me.id + '</dd>' +
+        '</dl>';
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+      } catch (_e) { /* swallow */ }
+      window.location.replace('/login/');
+    });
+
+    loadMe();
+  </script>
+</body>
+</html>

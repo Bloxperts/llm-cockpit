@@ -1,8 +1,9 @@
 """`cockpit-admin` — the cockpit's single CLI surface.
 
-Slice A wires `init`, `migrate`, and `doctor`. The remaining subcommands
-(`serve`, `user-*`, `systemd-install`) are declared so `--help` is honest
-and so future PRs can fill them in without churning argparse plumbing.
+UC-08 Slice A wired `init`, `migrate`, and `doctor`. UC-08 Slice B wires
+`serve` against the FastAPI app factory (`cockpit.main:create_app`). The
+remaining subcommands (`user-*`, `systemd-install`) stay stubbed so
+`--help` is honest and future PRs can fill them in without churn.
 
 Exit codes:
     0  success
@@ -49,15 +50,17 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--non-interactive", action="store_true")
     init.set_defaults(func=cmd_init)
 
-    # serve (stub — full impl in UC-08 Slice B)
-    serve = sub.add_parser("serve", help="Run the FastAPI app (Slice B).")
+    # serve
+    serve = sub.add_parser("serve", help="Run the cockpit FastAPI app.")
     serve.add_argument("--host", type=str, default=None)
     serve.add_argument("--port", type=int, default=None)
     serve.add_argument("--config", type=Path, default=None,
                        help="Path to config.toml (default: <data-dir>/config.toml).")
+    serve.add_argument("--data-dir", type=Path, default=None,
+                       help="Data dir, used if --config is omitted.")
     serve.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        default="INFO")
-    serve.set_defaults(func=cmd_serve_stub)
+    serve.set_defaults(func=cmd_serve)
 
     # migrate
     mig = sub.add_parser("migrate", help="Run alembic upgrade head against the data-dir DB.")
@@ -114,13 +117,47 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_serve_stub(args: argparse.Namespace) -> int:
-    print(
-        "`cockpit-admin serve` is not implemented in UC-08 Slice A. "
-        "It lands in Slice B together with the bundled frontend.",
-        file=sys.stderr,
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the cockpit FastAPI app via uvicorn.
+
+    Resolution order for settings:
+        1. config.toml at --config or <data-dir>/config.toml (if it exists).
+        2. COCKPIT_* env vars.
+        3. CLI flags --host / --port (override 1 + 2 when set).
+        4. Defaults baked into `cockpit.config.Settings`.
+    """
+    from cockpit.config import Settings
+    from cockpit.main import create_app
+
+    data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
+    config_path = (args.config or (data_dir / "config.toml")).expanduser().resolve()
+
+    if config_path.exists():
+        settings = Settings.from_toml(config_path)
+    else:
+        print(
+            f"No config.toml at {config_path}; falling back to env / defaults. "
+            f"Run `cockpit-admin init` for a proper bootstrap.",
+            file=sys.stderr,
+        )
+        settings = Settings()
+
+    if args.host is not None:
+        settings = settings.model_copy(update={"host": args.host})
+    if args.port is not None:
+        settings = settings.model_copy(update={"port": args.port})
+
+    app = create_app(settings)
+
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level=args.log_level.lower(),
     )
-    return DEFERRED_EXIT
+    return 0
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
@@ -184,7 +221,7 @@ def _check_frontend_assets() -> tuple[bool, str]:
             return True, "frontend assets present"
     except Exception:
         pass
-    return False, "frontend assets missing (Slice B will bundle them)"
+    return False, "frontend assets missing — wheel build did not bundle frontend_dist/"
 
 
 def _check_nvidia_smi() -> tuple[bool, str]:
@@ -206,11 +243,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         ("nvidia_smi",         _check_nvidia_smi()),
     ]
 
-    # Hard failures: ollama, db, data_dir. Soft (warn-only) in Slice A:
-    # frontend_assets, nvidia_smi.
+    # Hard failures: ollama, db, data_dir, frontend_assets (graduated in
+    # Slice B once we ship the placeholder HTML). nvidia_smi stays warn-only
+    # because GPU hardware is optional per ADR-003 §5.
     hard_failures = 0
+    hard_check_names = {
+        "ollama_reachable",
+        "db_schema_current",
+        "data_dir_writable",
+        "frontend_assets",
+    }
     for name, (ok, message) in checks:
-        marker = "OK  " if ok else "FAIL" if name in {"ollama_reachable", "db_schema_current", "data_dir_writable"} else "WARN"
+        marker = "OK  " if ok else "FAIL" if name in hard_check_names else "WARN"
         print(f"[{marker}] {name}: {message}")
         if not ok and marker == "FAIL":
             hard_failures += 1

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sign in — LLM Cockpit</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 360px; margin: 4rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 1.5rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 600; }
+    input { width: 100%; padding: 0.5rem; box-sizing: border-box; border: 1px solid #999; border-radius: 4px; font: inherit; }
+    button { margin-top: 1.25rem; padding: 0.6rem 1rem; width: 100%; cursor: pointer; border: 0; border-radius: 4px; background: #222; color: #fff; font: inherit; }
+    button[disabled] { opacity: 0.5; cursor: wait; }
+    .err { color: #b00020; margin-top: 1rem; min-height: 1.25rem; }
+    p.note { color: #555; font-size: 0.875rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>LLM Cockpit — Sign in</h1>
+  <form id="login">
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button id="submit" type="submit">Sign in</button>
+    <div class="err" id="err" role="alert" aria-live="polite"></div>
+  </form>
+  <p class="note">Sprint 2 placeholder UI. Sprint 4 replaces this with the real Next.js shell.</p>
+  <script>
+    const form = document.getElementById('login');
+    const errEl = document.getElementById('err');
+    const submitBtn = document.getElementById('submit');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errEl.textContent = '';
+      submitBtn.disabled = true;
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      try {
+        const r = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ username, password }),
+        });
+        if (r.status === 200) {
+          // After login we ask /me whether the user has to change their password.
+          const me = await fetch('/api/auth/me', { credentials: 'same-origin' });
+          if (me.status === 200) {
+            const meBody = await me.json();
+            if (meBody.must_change_password) {
+              window.location.replace('/change-password/');
+              return;
+            }
+          }
+          window.location.replace('/dashboard/');
+        } else if (r.status === 401) {
+          errEl.textContent = 'Invalid credentials';
+        } else if (r.status === 429) {
+          errEl.textContent = 'Too many attempts — wait 60 s and try again.';
+        } else {
+          errEl.textContent = 'Unexpected error (' + r.status + ').';
+        }
+      } catch (_e) {
+        errEl.textContent = 'Network error.';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

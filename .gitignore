@@ -43,10 +43,13 @@ backups/
 # Build outputs
 frontend/.next
 frontend/out
-src/cockpit/frontend_dist/
 .coverage
 htmlcov/
 coverage.xml
+# NOTE: src/cockpit/frontend_dist/ contains the Sprint 2 placeholder HTML
+# files (committed). Sprint 4 replaces them with the Next.js static export
+# built at wheel-build time; at that point ignore the build outputs only,
+# not the source HTML.
 
 # Secrets
 secrets/

@@ -36,10 +36,68 @@ def test_serve_help_lists_required_flags(capsys: pytest.CaptureFixture[str]) -> 
         assert flag in text, f"`serve --help` missing {flag}; got:\n{text}"
 
 
-def test_serve_stub_returns_deferred() -> None:
-    """`serve` is not implemented in Slice A; expect exit code 2."""
-    rc = main(["serve"])
-    assert rc == 2
+def test_serve_invokes_uvicorn_with_resolved_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """`cockpit-admin serve` builds the app and hands it to uvicorn.run.
+
+    We assert the resolution chain rather than actually start a server:
+        - missing config.toml → fall back to env / defaults
+        - --host / --port flags override
+    """
+    captured: dict = {}
+
+    def fake_run(app, host, port, log_level):
+        captured["app"] = app
+        captured["host"] = host
+        captured["port"] = port
+        captured["log_level"] = log_level
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    rc = main(
+        [
+            "serve",
+            "--data-dir", str(tmp_path),
+            "--host", "127.0.0.1",
+            "--port", "0",
+            "--log-level", "WARNING",
+        ]
+    )
+    assert rc == 0
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 0
+    assert captured["log_level"] == "warning"
+
+
+def test_serve_loads_config_toml_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """If config.toml exists, settings come from it; CLI flags still override."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[server]\nhost = "0.0.0.0"\nport = 9090\n'
+        '[ollama]\nurl = "http://127.0.0.1:11434"\n'
+        '[security]\njwt_secret = "x"\nsession_days = 7\nbcrypt_cost = 4\n'
+        '[telemetry]\nnvidia_smi_path = ""\nsample_interval_s = 5\n'
+        f'[paths]\ndata_dir = "{tmp_path}"\ndb_file = "x.db"\nlog_file = "x.log"\n',
+        encoding="utf-8",
+    )
+    captured: dict = {}
+
+    def fake_run(app, host, port, log_level):
+        captured["host"] = host
+        captured["port"] = port
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    # No --host/--port — expect 0.0.0.0 and 9090 from config.toml.
+    rc = main(["serve", "--config", str(cfg)])
+    assert rc == 0
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 9090
 
 
 def test_user_add_stub_returns_deferred() -> None:

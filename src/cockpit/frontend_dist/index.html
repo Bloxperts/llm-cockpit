@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>LLM Cockpit</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+  <p>Loading…</p>
+  <script>
+    // Sprint 2 placeholder. Sprint 4 replaces this with the real Next.js shell.
+    // We can't read HttpOnly cookies from JS, so we just hit /api/auth/me and
+    // pick a destination based on the response.
+    (async () => {
+      try {
+        const r = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        if (r.status === 200) {
+          const me = await r.json();
+          if (me.must_change_password) {
+            window.location.replace('/change-password/');
+          } else {
+            window.location.replace('/dashboard/');
+          }
+        } else {
+          window.location.replace('/login/');
+        }
+      } catch (_e) {
+        window.location.replace('/login/');
+      }
+    })();
+  </script>
+</body>
+</html>
