@@ -3,6 +3,86 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.2.0] — 2026-04-28 — User management + code workspace
+
+Minor-version bump (UC-06): the cockpit gains a real admin user-management
+surface and a per-user code working folder. UC-06 functional spec moves
+through Accepted → In Progress → Done (technical) on this release.
+
+### Added — User management (UC-06)
+
+- **`/admin/users` page** — table with username · role · last login · lifetime
+  tokens in / out · created · actions. Role inline-edited via dropdown;
+  password reset and soft-delete via confirmation modals; "+ New user"
+  modal with role selector. Native Intl.RelativeTimeFormat for the
+  "2 hours ago" / "3 days ago" timestamps. Gated client-side and
+  server-side to admin only; non-admins redirect to `/dashboard`.
+- **`AppHeader` Users link** — visible to admins only.
+- **Backend `/api/admin/users` router**:
+  - `GET /` — list users + lifetime token totals (`tokens_in`,
+    `tokens_out`) aggregated in one `GROUP BY conversation.user_id`
+    query (no N+1). Filters: `?include_deleted=true`, `?q=<prefix>`.
+  - `POST /` — create user with username regex `^[a-z][a-z0-9._-]{1,30}$`
+    + bcrypt-hash + `must_change_password=1`. Audit `user_created`.
+  - `PATCH /{id}/role` — change role. Refuses to demote the last admin
+    (`409 cannot_demote_last_admin`). No-op for matching role (no audit).
+  - `POST /{id}/reset-password` — admin reset; flips
+    `must_change_password=1` + clears `password_changed_at`. Audit
+    `password_reset_by_admin`.
+  - `DELETE /{id}` — soft delete (`deleted_at = now()`). Refuses self
+    (`409 cannot_self_delete`) and last admin
+    (`409 cannot_delete_last_admin`). Audit `user_deleted`.
+- **`services/users.py` additions** — `count_active_admins`,
+  `create_managed_user`, `change_role`, `soft_delete`,
+  `reset_password_admin`, `get_token_totals` (single user) and
+  `get_token_totals_bulk` (all users in one query).
+
+### Added — Code working folder (UC-06b)
+
+- **Per-user workspace** at `<data_dir>/code_files/<username>/`. Created
+  lazily on first access; configurable via `[paths] code_files_dir` in
+  `config.toml` or `COCKPIT_CODE_FILES_DIR` env.
+- **`/api/code/files` router**:
+  - `GET /` — list files (non-recursive). `?dir=` walks subdirectories.
+  - `GET /download?path=…` — file download with correct
+    `Content-Disposition`.
+  - `POST /save` — write a file atomically (`.tmp` → `os.replace`).
+    `{path, content, overwrite}` body. 409 on `file_exists` when
+    `overwrite=false`. 413 on > 10 MB.
+  - `DELETE ?path=…` — file or empty directory. 409 on non-empty dir.
+- **Path-traversal guard** — every operation runs through
+  `_safe_user_path` which resolves the user-supplied relative path
+  inside the per-user root and rejects `..` ladders, absolute paths,
+  null-byte injection, and any path that resolves outside the root.
+- **Code-page Files panel** — sidebar drawer below the conversation
+  list; shows file name + size + Download / Delete actions. Refreshes
+  on save.
+- **Save-to-workspace button** — third icon button on every fenced code
+  block in code mode (cloud-upload). Prompts for a filename (default
+  `artifact.{language-ext}`); on 409 offers an Overwrite confirm; on
+  success refreshes the Files panel.
+
+### Changed
+
+- `main.py` — registers `admin_users_router` under `/api/admin/users`
+  and `code_files_router` under `/api/code/files`. The latter is
+  registered **before** the UC-05 code router so the int-typed
+  `/api/code/{conversation_id}` route doesn't shadow `/api/code/files`
+  (would otherwise produce `422 int_parsing` on "files").
+
+### Tests
+
+- `tests/test_uc06_users.py` (28 tests): role gates, list filters +
+  token aggregation, create / patch / reset / delete happy + error
+  paths, last-admin guards, audit row shape.
+- `tests/test_code_files.py` (26 tests): role gate, list / save /
+  download / delete round-trip, sub-directory creation, overwrite
+  semantics, 10 MB limit, six path-traversal variants, per-user
+  isolation, atomic-rename failure cleans up `.tmp`.
+- 339 tests collected total, all green.
+- Coverage on the new modules: `routers/admin_users.py` 94%,
+  `routers/code_files.py` 96%, `services/users.py` 94%.
+
 ## [v0.1.3] — 2026-04-28 — Dashboard GPU UX + model context display
 
 UI-layer slice on top of v0.1.2. No new use cases or DB tables; falls under
