@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
+import { DashboardHistory } from "@/components/DashboardHistory";
 import { ApiError, api, streamSse } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
@@ -12,6 +13,8 @@ import {
   WARM_COLUMNS,
   fmtBytes,
 } from "@/lib/dashboard-types";
+
+type DashboardTab = "live" | "history";
 
 // Sprint 5b — RTX 3090 (Ampere GPU Boost 4.0) thresholds. These are the
 // rated values for the codebase's reference card; they're a reasonable
@@ -47,6 +50,10 @@ export default function DashboardPage() {
   const [busyModel, setBusyModel] = useState<string | null>(null);
   const [perfModel, setPerfModel] = useState<string | null>(null);
   const [perfLog, setPerfLog] = useState<string[]>([]);
+  // UC-03 — top-level Live / History tab. The Live SSE stream still
+  // runs in the background regardless of which tab is shown so
+  // switching back to Live is instant.
+  const [tab, setTab] = useState<DashboardTab>("live");
 
   // Initial load + SSE stream.
   useEffect(() => {
@@ -167,36 +174,65 @@ export default function DashboardPage() {
     <>
       <AppHeader />
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-4 space-y-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <StatusPill status={snapshot.status} />
-          <div className="flex flex-wrap gap-2">
-            {snapshot.gpus.length === 0 ? (
-              <span className="text-sm text-neutral-500">
-                No GPU telemetry detected (Mac / CPU-only / nvidia-smi missing).
-              </span>
-            ) : (
-              snapshot.gpus.map((g) => (
-                <GpuStripItem key={g.index} g={g} />
-              ))
-            )}
-          </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setTab("live")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium border ${
+              tab === "live"
+                ? "bg-neutral-900 text-white border-neutral-900 dark:bg-neutral-100 dark:text-neutral-900 dark:border-neutral-100"
+                : "bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Live
+          </button>
+          <button
+            onClick={() => setTab("history")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium border ${
+              tab === "history"
+                ? "bg-neutral-900 text-white border-neutral-900 dark:bg-neutral-100 dark:text-neutral-900 dark:border-neutral-100"
+                : "bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+            }`}
+          >
+            History
+          </button>
         </div>
 
-        <section className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
-          {snapshot.columns.map((col) => (
-            <ColumnView
-              key={col}
-              col={col}
-              models={buckets.get(col) ?? []}
-              columns={snapshot.columns}
-              isAdmin={!!isAdmin}
-              busyModel={busyModel}
-              onPlacementChange={onPlacementChange}
-              onDelete={onDelete}
-              onPerfTest={onPerfTest}
-            />
-          ))}
-        </section>
+        {tab === "live" ? (
+          <>
+            <div className="flex items-center gap-3 flex-wrap">
+              <StatusPill status={snapshot.status} />
+              <div className="flex flex-wrap gap-2">
+                {snapshot.gpus.length === 0 ? (
+                  <span className="text-sm text-neutral-500">
+                    No GPU telemetry detected (Mac / CPU-only / nvidia-smi missing).
+                  </span>
+                ) : (
+                  snapshot.gpus.map((g) => (
+                    <GpuStripItem key={g.index} g={g} />
+                  ))
+                )}
+              </div>
+            </div>
+
+            <section className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
+              {snapshot.columns.map((col) => (
+                <ColumnView
+                  key={col}
+                  col={col}
+                  models={buckets.get(col) ?? []}
+                  columns={snapshot.columns}
+                  isAdmin={!!isAdmin}
+                  busyModel={busyModel}
+                  onPlacementChange={onPlacementChange}
+                  onDelete={onDelete}
+                  onPerfTest={onPerfTest}
+                />
+              ))}
+            </section>
+          </>
+        ) : (
+          <DashboardHistory />
+        )}
       </main>
 
       {perfModel ? (

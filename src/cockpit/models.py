@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -163,6 +164,57 @@ class MetricsSnapshot(Base):
     )
 
 
+class MetricsSnapshotMinute(Base):
+    """UC-03 — 1-minute down-sample of `metrics_snapshot`.
+
+    One row per (closed minute, gpu_index). Populated by
+    `services.aggregator.MinuteAggregator`. The 24 h history chart reads
+    from this table; raw `metrics_snapshot` is pruned to 7 d so this is
+    effectively the long-tail store for the minute granularity.
+    """
+
+    __tablename__ = "metrics_snapshot_minute"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    vram_used_mb_avg: Mapped[float] = mapped_column(Float, nullable=False)
+    temp_c_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temp_c_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    power_w_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index("idx_msm_gpu_ts", "gpu_index", "bucket_ts"),
+        UniqueConstraint("bucket_ts", "gpu_index", name="uq_msm_bucket_gpu"),
+    )
+
+
+class MetricsSnapshotHour(Base):
+    """UC-03 — 1-hour down-sample of `metrics_snapshot_minute`.
+
+    One row per (closed hour, gpu_index). Populated by
+    `services.aggregator.HourAggregator`. The 7 d history chart reads
+    from this table.
+    """
+
+    __tablename__ = "metrics_snapshot_hour"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    vram_used_mb_avg: Mapped[float] = mapped_column(Float, nullable=False)
+    temp_c_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temp_c_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    power_w_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index("idx_msh_gpu_ts", "gpu_index", "bucket_ts"),
+        UniqueConstraint("bucket_ts", "gpu_index", name="uq_msh_bucket_gpu"),
+    )
+
+
 class Conversation(Base):
     """UC-04 / UC-05 — one row per chat or code conversation.
 
@@ -230,6 +282,10 @@ class Message(Base):
             "role IN ('user', 'assistant', 'system')", name="ck_messages_role"
         ),
         Index("idx_messages_conversation_ts", "conversation_id", "ts"),
+        # UC-03 — needed by the call-rate / latency / tokens history queries
+        # which filter on `ts` only. The composite (conversation_id, ts)
+        # above can't serve a `ts`-only WHERE per the leftmost-prefix rule.
+        Index("idx_messages_ts", "ts"),
     )
 
 
