@@ -41,6 +41,8 @@ from cockpit.routers import chat as chat_router
 from cockpit.routers import code as code_router
 from cockpit.routers import code_files as code_files_router
 from cockpit.routers import dashboard as dashboard_router
+from cockpit.routers import dashboard_history as dashboard_history_router
+from cockpit.services.aggregator import HourAggregator, MinuteAggregator
 from cockpit.services.metrics import (
     GpuSampler,
     GpuSamplerState,
@@ -148,9 +150,27 @@ def create_app(
             )
             app.state.gpu_sampler = gpu_sampler
             app.state.model_sampler = model_sampler
+            # UC-03 — down-sample aggregators that feed the dashboard
+            # history charts. The minute aggregator runs every 60 s
+            # (intentionally faster than the spec's hourly batch — see
+            # services/aggregator.py module docstring for the rationale).
+            minute_aggregator = MinuteAggregator(
+                session_factory=app.state.session_factory,
+            )
+            hour_aggregator = HourAggregator(
+                session_factory=app.state.session_factory,
+            )
+            app.state.minute_aggregator = minute_aggregator
+            app.state.hour_aggregator = hour_aggregator
             sampler_tasks = [
                 asyncio.create_task(gpu_sampler.run(), name="cockpit-gpu-sampler"),
                 asyncio.create_task(model_sampler.run(), name="cockpit-model-sampler"),
+                asyncio.create_task(
+                    minute_aggregator.run(), name="cockpit-minute-aggregator"
+                ),
+                asyncio.create_task(
+                    hour_aggregator.run(), name="cockpit-hour-aggregator"
+                ),
             ]
             app.state.sampler_tasks = sampler_tasks
             # Also kick a single sample so /api/dashboard/snapshot has data
@@ -199,6 +219,12 @@ def create_app(
 
     app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
     app.include_router(dashboard_router.router, prefix="/api/dashboard", tags=["dashboard"])
+    # UC-03 — dashboard history charts share the /api/dashboard prefix.
+    app.include_router(
+        dashboard_history_router.router,
+        prefix="/api/dashboard",
+        tags=["dashboard"],
+    )
     app.include_router(
         admin_ollama_router.router, prefix="/api/admin/ollama", tags=["admin"]
     )
