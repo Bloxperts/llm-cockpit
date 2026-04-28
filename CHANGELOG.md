@@ -3,6 +3,110 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.3.0] — 2026-04-28 — Dashboard history charts (UC-03)
+
+Minor-version bump (UC-03): the dashboard gains a second top-level tab
+showing 24 h and 7 d time-series for GPU temperature, VRAM usage,
+request rate, and latency. Functional spec moves from Accepted → In
+Progress → Done (technical) on this release.
+
+### Added — Dashboard history (UC-03)
+
+- **`/dashboard` — Live / History tab bar.** The existing live view
+  becomes the **Live** tab; **History** is the new tab. Live SSE keeps
+  running in the background regardless of which tab is shown, so
+  switching back to Live is instant. Inside History a sub-tab toggle
+  flips between **24 h** and **1-min buckets** and **7 d** with
+  **1-h buckets**.
+- **Four chart cards** powered by recharts (added as a top-level
+  frontend dep — `recharts ^3.8.1`):
+  - **GPU Temperature** — `LineChart`, one line per GPU index
+    (emerald, sky, amber, rose palette matching the live status badges).
+    Y-axis pinned to 0–100 °C.
+  - **VRAM Used** — `AreaChart` stacked per GPU index, MB units.
+  - **Request rate** — `BarChart`, "calls / minute" (24 h) or
+    "calls / hour" (7 d). Counts assistant `messages` rows only — user
+    and system rows are excluded.
+  - **Latency p50 / p95** — `LineChart` two lines, ms units. SQLite has
+    no `PERCENTILE_DISC`, so latency rows are pulled per-bucket and the
+    percentiles are computed in Python via linear interpolation.
+- **Per-card lazy fetch** via TanStack Query (`staleTime: 60 000`).
+  Switching range or remounting the History tab re-fetches; no
+  page-wide poll. Each card has its own loading skeleton (animated
+  pulse) and empty state ("No data yet — GPU metrics accumulate over
+  time.").
+- **Tooltip timestamp formatting** uses `Intl.DateTimeFormat` — `HH:mm`
+  for 24 h, `MMM d HH:mm` for 7 d. No external date library.
+
+### Added — Backend (UC-03)
+
+- **`GET /api/dashboard/history?range=24h|7d&metric=gpu_temp|vram|calls|latency|tokens`**
+  — uniform `{ series: [ { label, data: [ { ts, value } ] } ] }` shape
+  across all five metrics. Auth gate: `current_user_must_be_settled`
+  (same as the live dashboard — UC-09 password change must complete
+  first). Validates `range` and `metric` against `Literal[…]`, so
+  unknown values 422 from FastAPI's request-shape parser.
+- **Aggregator service** (`services/aggregator.py`):
+  - **`MinuteAggregator`** — runs every 60 s. Rolls 5 s
+    `metrics_snapshot` rows into 1-min buckets in
+    `metrics_snapshot_minute` via `INSERT OR IGNORE` keyed on
+    `UNIQUE(bucket_ts, gpu_index)` (idempotent on re-run). Prunes raw
+    `metrics_snapshot` rows older than 7 d.
+  - **`HourAggregator`** — runs every 3600 s. Rolls 1-min buckets into
+    1-h buckets in `metrics_snapshot_hour`. Prunes
+    `metrics_snapshot_minute` rows older than 30 d.
+  - Both expose `aggregate_once()` for tests + `run()` for the FastAPI
+    lifespan, mirroring the existing `GpuSampler` / `ModelStateSampler`
+    pattern. Defensive `try/except` swallows runtime errors so a single
+    bad iteration doesn't kill the loop.
+- **Cadence note (spec deviation):** the UC-03 functional spec describes
+  the down-sample as an "hourly batch". We deliberately run the minute
+  aggregator every 60 s (not hourly) so the 24 h chart updates within a
+  minute of the most recent sample — an hourly batch would leave the
+  most recent hour empty. Output granularity (1-min / 1-h buckets)
+  matches the spec; only the *job* interval differs. Spec wording to be
+  synced at sprint review.
+- **Closed-minute / closed-hour semantics** — the in-progress wall-minute
+  is never partially aggregated. If `now = 12:34:17`, the closed minute
+  is `12:33:00 .. 12:34:00`; the current minute waits for the next tick.
+
+### Migration
+
+- **`0005_history.py`** — adds `metrics_snapshot_minute` +
+  `metrics_snapshot_hour` (each with `UNIQUE(bucket_ts, gpu_index)` and
+  `(gpu_index, bucket_ts)` indexes), plus a standalone `idx_messages_ts`
+  so the call-rate / latency / tokens history queries can use an index
+  (the existing composite `(conversation_id, ts)` can't serve a
+  `ts`-only `WHERE` per the leftmost-prefix rule). Reversible.
+
+### Descoped
+
+- **Prompt-token histogram** and **daily completion-token total bar
+  chart** — both listed in the UC-03 functional spec under the 7 d tab.
+  Deferred to a UX polish sprint to keep the v0.3.0 surface focused on
+  the four core time-series.
+- **Per-user usage panel** mentioned in the use case (chat / code users
+  see their own messages-sent-by-day chart) — also deferred. Today's
+  history view is system-wide only.
+
+### Tests
+
+- **`tests/test_sprint8_history.py`** (29 tests):
+  - migration round-trip + UNIQUE upsert
+  - `MinuteAggregator`: averages, idempotent re-run, skips in-progress
+    minute, empty-window, 7 d retention pruning, runtime-error swallowing
+  - `HourAggregator`: hourly rollup from minute table, 30 d retention
+    pruning, runtime-error swallowing
+  - both `run()` periodic loops: cancel-cleanly + runtime-exception
+    swallowing (mirrors the GpuSampler pattern)
+  - `_percentile` helper edge cases (empty / single value / interpolated)
+  - History endpoint: auth gate, range/metric validation, all five
+    metrics × 24 h + 7 d coverage, user/system message exclusion,
+    latency-null skipping, empty-data shape, partial-data shape (one
+    GPU only).
+- **394 tests collected, all green.** Coverage on touched modules:
+  `routers/dashboard_history.py` 97 %, `services/aggregator.py` 98 %.
+
 ## [v0.2.1] — 2026-04-28 — Auth UX + Session control
 
 Patch on top of v0.2.0. Adds five auth-surface improvements driven by
