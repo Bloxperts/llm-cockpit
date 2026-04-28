@@ -86,6 +86,7 @@ export function AppHeader() {
     { href: "/chat/", label: "Chat", show: hasAtLeast(me.role, "chat") },
     { href: "/code/", label: "Code", show: hasAtLeast(me.role, "code") },
     { href: "/admin/users/", label: "Users", show: me.role === "admin" },
+    { href: "/admin/ollama/", label: "Ollama", show: me.role === "admin" },
   ];
 
   return (

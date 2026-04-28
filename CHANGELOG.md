@@ -3,6 +3,114 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.3.1] — 2026-04-28 — Admin Ollama configuration page (UC-10)
+
+Patch on top of v0.3.0. UC-10 ships the `/admin/ollama` admin surface:
+the four-panel page that holds the controls that don't belong on the
+placement board — model tag overrides, the code-mode default system
+prompt, the tag-heuristics YAML editor, per-model metrics, and the
+unified login + admin audit log. UC-10 functional spec moves Accepted
+→ In Progress → Done (technical) on this release.
+
+### Added — Backend
+
+- **Tag CRUD** (`routers/admin_ollama.py`):
+  - `PATCH /api/admin/ollama/models/{model}/tag` — body
+    `{ tag: 'chat' | 'code' | 'both' }`. Upserts the row with
+    `source='override'`. Returns `{ model, tag, source: 'override' }`.
+    Audit `model_tag_set`. Tag validation rejects anything outside the
+    three values with `422`.
+  - `DELETE /api/admin/ollama/models/{model}/tag` — removes the
+    override and re-applies the heuristic over the cached model list
+    so the row gets back an `auto` tag in the same transaction.
+    Idempotent (`204` even when no override existed) — no audit row
+    when there was nothing to clear. Audit `model_tag_cleared`
+    otherwise.
+- **Settings GET / PUT**:
+  - `GET /api/admin/ollama/settings` — returns
+    `{ code_default_system_prompt, tag_heuristics_yaml }` with `null`
+    for any unset key.
+  - `PUT /api/admin/ollama/settings` — partial-PUT. Only keys
+    explicitly supplied in the body are written. A malformed
+    `tag_heuristics_yaml` returns `400 invalid_yaml` **before** the DB
+    write, so a bad YAML never displaces a good one. When
+    `tag_heuristics_yaml` changes, the new patterns drive
+    `reapply_heuristics()` over the cached model list in the same
+    transaction so auto-tagged rows update immediately. Audit
+    `settings_updated` lists the changed keys.
+  - DP-013 single-writer hygiene confirmed: the PUT endpoint is the
+    first writer for both `code_default_system_prompt` and
+    `tag_heuristics_yaml`.
+- **Per-model metrics** (last 7 d, assistant rows only):
+  - `GET /api/admin/ollama/metrics` — rollup table:
+    `model · calls · prompt_tokens · completion_tokens · mean_latency_ms ·
+    mean_gen_tps · last_call_at`, ordered by `calls DESC`. p95 omitted
+    by design (would need to pull all rows per model).
+  - `GET /api/admin/ollama/metrics/{model}` — last 50 calls + Python-
+    computed p95 latency.
+- **Unified audit log** (`routers/admin_audit.py`, new module):
+  - `GET /api/admin/audit?page=&per_page=&action=&username=` — merges
+    `login_audit` + `admin_audit` into a single time-sorted feed.
+    Two SELECTs merged in Python (UNION across heterogeneous schemas
+    in SQLite is awkward; v0.1's tables are tiny — even a heavily-used
+    cockpit accumulates a few hundred rows a day).
+  - `GET /api/admin/audit/export` — same filters, no pagination,
+    `Content-Type: text/csv` with `Content-Disposition: attachment;
+    filename=audit.csv`.
+
+### Added — Heuristic re-evaluation
+
+- `services/model_tags.py` adds `reapply_heuristics(session,
+  available_models, yaml_override=None)`. Walks the cached
+  available-model list, recomputes the auto tag for every row whose
+  `source='auto'`, inserts a fresh `auto` row for any name without one,
+  and **never touches override rows**. Caller commits.
+- `services/metrics.ModelStateSampler` grows an optional
+  `session_factory`. When a never-before-seen model name first appears
+  in `LLMChat.list_models()`, the sampler triggers
+  `reapply_heuristics` so new models get a tag row inserted
+  automatically.
+
+### Added — Frontend
+
+- **`/admin/ollama` page** with four collapsible panels (native
+  `<details>` / `<summary>` — no new UI library):
+  1. **Model tags** — table of every served model with size, current
+     tag, source badge (`auto` neutral / `override` amber), inline tag
+     `<select>`, "Clear override" button (only when source is
+     `override`), "Delete" button per row. Plus a "Pull a model" inline
+     control with SSE-streamed progress.
+  2. **Defaults** — `<textarea>` for `code_default_system_prompt`,
+     monospace `<textarea>` for `tag_heuristics_yaml`, "Save" button
+     with success / error flash.
+  3. **Per-model metrics (last 7 days)** — sortable table; click a row
+     to open a `<dialog>` with the last 50 calls and the p95 latency.
+  4. **Audit log** — paginated table with Action / Username text
+     filters, "Apply" + "Export CSV" buttons, Prev / Next pagination.
+- **`AppHeader` "Ollama" link** — admin-only, alongside the existing
+  "Users" link.
+
+### Tests
+
+- **`tests/test_sprint9_admin_ollama.py`** (37 tests):
+  - 8 auth-gate cases (every UC-10 endpoint × chat/code/unauth).
+  - 8 tag-CRUD cases (override creation, audit shape, idempotent
+    duplicate PATCH, invalid tag, DELETE reapplies heuristic, audit on
+    DELETE, idempotent DELETE on missing override, DELETE on unknown
+    model).
+  - 6 settings cases (nulls, both keys, partial body, invalid YAML
+    preserves prior good row, audit, YAML-change reapplies heuristic
+    while overrides survive).
+  - 5 metrics cases (7-day window, role filter, ordering, drill-down
+    limit of 50, p95 computation).
+  - 5 audit cases (merge of login+admin sources, action filter,
+    username filter, pagination, CSV export shape).
+  - 3 `reapply_heuristics()` helper cases (auto-row update, override
+    survival, `yaml_override` arg precedence).
+- **431 tests collected, all green.** Coverage on touched modules:
+  `routers/admin_ollama.py` 93 %, `routers/admin_audit.py` 91 %,
+  `services/model_tags.py` 94 %.
+
 ## [v0.3.0] — 2026-04-28 — Dashboard history charts (UC-03)
 
 Minor-version bump (UC-03): the dashboard gains a second top-level tab

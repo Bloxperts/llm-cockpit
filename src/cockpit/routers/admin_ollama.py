@@ -25,8 +25,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
+import yaml
+
 from cockpit.deps import get_chat_factory, get_session, get_settings, get_telemetry_factory
-from cockpit.models import ModelConfig, ModelPerf, ModelTag, User
+from cockpit.models import (
+    Message,
+    ModelConfig,
+    ModelPerf,
+    ModelTag,
+    Setting,
+    User,
+)
 from cockpit.ports.llm_chat import (
     LLMChat,
     OllamaModelNotFound,
@@ -36,13 +45,26 @@ from cockpit.ports.llm_chat import (
 from cockpit.ports.telemetry import GpuSnapshot, Telemetry
 from cockpit.routers.auth import require_role
 from cockpit.schemas import (
+    ModelCallEntry,
+    ModelMetricsDrilldown,
+    ModelMetricsSummary,
     ModelSettingsPatch,
+    ModelTagPatchRequest,
+    ModelTagResponse,
     PerfTestRequest,
     PlaceApplied,
     PlaceRequest,
     PlaceResponse,
+    SettingsPutRequest,
+    SettingsPutResponse,
+    SettingsResponse,
 )
 from cockpit.services.audit import write_admin_audit
+from cockpit.services.model_tags import (
+    SETTINGS_KEY_TAG_HEURISTICS,
+    load_heuristic_from_yaml,
+    reapply_heuristics,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -749,3 +771,314 @@ async def perf_test(
     return EventSourceResponse(gen())
 
 
+
+
+# =========================================================================
+# UC-10 — Model tag management
+# =========================================================================
+
+
+_VALID_TAGS = {"chat", "code", "both"}
+
+
+def _client_ip(request: Request) -> str | None:
+    if request.client is not None:
+        return request.client.host
+    return None
+
+
+def _available_model_names(request: Request) -> list[str]:
+    """Read the cached model list from `app.state.model_state`. Used by
+    the heuristic re-evaluation flow so we don't hit Ollama on every
+    settings save / tag clear."""
+    state = request.app.state.model_state
+    return [m.name for m in (state.available_models or [])]
+
+
+@router.patch(
+    "/models/{model}/tag",
+    response_model=ModelTagResponse,
+    summary="Override a model's chat/code/both tag (admin).",
+)
+def patch_model_tag(
+    model: str,
+    body: ModelTagPatchRequest,
+    request: Request,
+    actor: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+) -> ModelTagResponse:
+    if body.tag not in _VALID_TAGS:
+        raise HTTPException(
+            422,
+            detail={
+                "detail": "invalid_tag",
+                "allowed": sorted(_VALID_TAGS),
+            },
+        )
+    existing = db.execute(
+        select(ModelTag).where(ModelTag.model == model)
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(ModelTag(model=model, tag=body.tag, source="override"))
+    else:
+        existing.tag = body.tag
+        existing.source = "override"
+    db.flush()
+    write_admin_audit(
+        db,
+        actor_id=actor.id,
+        action="model_tag_set",
+        target_model=model,
+        details={"tag": body.tag},
+        source_ip=_client_ip(request),
+    )
+    db.commit()
+    return ModelTagResponse(model=model, tag=body.tag, source="override")
+
+
+@router.delete(
+    "/models/{model}/tag",
+    status_code=204,
+    summary="Clear a model tag override; revert to heuristic (admin).",
+)
+def delete_model_tag(
+    model: str,
+    request: Request,
+    actor: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+) -> Response:
+    """Remove the override row. If the model is in the cached available
+    list, immediately re-apply the heuristic so the row gets back an
+    `auto` tag — otherwise leave it absent (the next `ModelStateSampler`
+    tick will re-insert it)."""
+    existing = db.execute(
+        select(ModelTag).where(ModelTag.model == model)
+    ).scalar_one_or_none()
+    if existing is None or existing.source != "override":
+        # Idempotent — no-op + no audit row when there's nothing to clear.
+        return Response(status_code=204)
+
+    db.execute(delete(ModelTag).where(ModelTag.model == model))
+    db.flush()
+
+    # Reapply the heuristic for the cached model list. If `model` is in
+    # the list it'll be re-inserted with source='auto'.
+    available = _available_model_names(request)
+    if model not in available:
+        available = sorted(set(available + [model]))
+    reapply_heuristics(db, available)
+
+    write_admin_audit(
+        db,
+        actor_id=actor.id,
+        action="model_tag_cleared",
+        target_model=model,
+        details={"prior_tag": existing.tag},
+        source_ip=_client_ip(request),
+    )
+    db.commit()
+    return Response(status_code=204)
+
+
+# =========================================================================
+# UC-10 — Settings GET / PUT
+# =========================================================================
+
+
+_SETTINGS_KEYS = {"code_default_system_prompt", SETTINGS_KEY_TAG_HEURISTICS}
+
+
+def _get_setting(db: Session, key: str) -> str | None:
+    row = db.execute(select(Setting).where(Setting.key == key)).scalar_one_or_none()
+    return row.value if row is not None else None
+
+
+def _put_setting(db: Session, key: str, value: str) -> None:
+    row = db.execute(select(Setting).where(Setting.key == key)).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(key=key, value=value))
+    else:
+        row.value = value
+
+
+@router.get(
+    "/settings",
+    response_model=SettingsResponse,
+    summary="Read the cockpit-wide admin settings (admin).",
+)
+def get_settings_endpoint(
+    actor: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+) -> SettingsResponse:
+    return SettingsResponse(
+        code_default_system_prompt=_get_setting(db, "code_default_system_prompt"),
+        tag_heuristics_yaml=_get_setting(db, SETTINGS_KEY_TAG_HEURISTICS),
+    )
+
+
+@router.put(
+    "/settings",
+    response_model=SettingsPutResponse,
+    summary="Update one or more cockpit-wide admin settings (admin).",
+)
+def put_settings_endpoint(
+    body: SettingsPutRequest,
+    request: Request,
+    actor: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+) -> SettingsPutResponse:
+    """Partial-PUT: only keys present in the body are written. If
+    `tag_heuristics_yaml` is supplied, it is parsed before the write
+    so a malformed YAML returns 400 without touching the DB; on
+    success the heuristic is re-applied across the cached model list
+    so the new patterns take effect immediately."""
+    updated: list[str] = []
+
+    if body.tag_heuristics_yaml is not None:
+        try:
+            load_heuristic_from_yaml(body.tag_heuristics_yaml)
+        except yaml.YAMLError as exc:
+            raise HTTPException(
+                400,
+                detail={"detail": "invalid_yaml", "message": str(exc)},
+            ) from exc
+        _put_setting(db, SETTINGS_KEY_TAG_HEURISTICS, body.tag_heuristics_yaml)
+        updated.append(SETTINGS_KEY_TAG_HEURISTICS)
+
+    if body.code_default_system_prompt is not None:
+        _put_setting(db, "code_default_system_prompt", body.code_default_system_prompt)
+        updated.append("code_default_system_prompt")
+
+    if not updated:
+        # No-op; spec says "for each provided key", so the empty case is
+        # legal — return without writing an audit row.
+        return SettingsPutResponse(updated=[])
+
+    if SETTINGS_KEY_TAG_HEURISTICS in updated and body.tag_heuristics_yaml is not None:
+        # Re-apply heuristic over the cached model list so any auto rows
+        # whose tag changed get refreshed in this same transaction.
+        reapply_heuristics(
+            db,
+            _available_model_names(request),
+            yaml_override=body.tag_heuristics_yaml,
+        )
+
+    write_admin_audit(
+        db,
+        actor_id=actor.id,
+        action="settings_updated",
+        target_model=None,
+        details={"keys_changed": updated},
+        source_ip=_client_ip(request),
+    )
+    db.commit()
+    return SettingsPutResponse(updated=updated)
+
+
+# =========================================================================
+# UC-10 — Per-model metrics rollup + drill-down
+# =========================================================================
+
+
+@router.get(
+    "/metrics",
+    response_model=list[ModelMetricsSummary],
+    summary="Per-model 7-day rollup (admin).",
+)
+def get_model_metrics(
+    actor: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+) -> list[ModelMetricsSummary]:
+    """One row per model. Counts only assistant messages with non-null
+    `model`. p95 latency is *not* in this rollup — pulling all rows just
+    to compute one percentile per model would be too expensive for the
+    list view; the drill-down endpoint provides p95.
+    """
+    from sqlalchemy import func as sqlfunc
+
+    rows = db.execute(
+        select(
+            Message.model,
+            sqlfunc.count(Message.id).label("calls"),
+            sqlfunc.coalesce(sqlfunc.sum(Message.usage_in), 0).label("prompt_tokens"),
+            sqlfunc.coalesce(sqlfunc.sum(Message.usage_out), 0).label("completion_tokens"),
+            sqlfunc.avg(Message.latency_ms).label("mean_latency_ms"),
+            sqlfunc.avg(Message.gen_tps).label("mean_gen_tps"),
+            sqlfunc.max(Message.ts).label("last_call_at"),
+        )
+        .where(
+            Message.role == "assistant",
+            Message.model.is_not(None),
+            Message.ts >= sqlfunc.datetime("now", "-7 days"),
+        )
+        .group_by(Message.model)
+        .order_by(sqlfunc.count(Message.id).desc())
+    ).all()
+    return [
+        ModelMetricsSummary(
+            model=r.model,
+            calls=int(r.calls),
+            prompt_tokens=int(r.prompt_tokens or 0),
+            completion_tokens=int(r.completion_tokens or 0),
+            mean_latency_ms=float(r.mean_latency_ms) if r.mean_latency_ms is not None else None,
+            mean_gen_tps=float(r.mean_gen_tps) if r.mean_gen_tps is not None else None,
+            last_call_at=r.last_call_at,
+        )
+        for r in rows
+    ]
+
+
+def _p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    rank = 0.95 * (n - 1)
+    lo = int(rank)
+    frac = rank - lo
+    if lo + 1 >= n:
+        return sorted_vals[-1]
+    return sorted_vals[lo] + frac * (sorted_vals[lo + 1] - sorted_vals[lo])
+
+
+@router.get(
+    "/metrics/{model}",
+    response_model=ModelMetricsDrilldown,
+    summary="Last 50 assistant calls + p95 latency for a model (admin).",
+)
+def get_model_metrics_drilldown(
+    model: str,
+    actor: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+) -> ModelMetricsDrilldown:
+    rows = db.execute(
+        select(
+            Message.role,
+            Message.usage_in,
+            Message.usage_out,
+            Message.latency_ms,
+            Message.gen_tps,
+            Message.ts,
+            Message.error,
+        )
+        .where(Message.model == model, Message.role == "assistant")
+        .order_by(Message.ts.desc())
+        .limit(50)
+    ).all()
+
+    calls = [
+        ModelCallEntry(
+            role=r.role,
+            usage_in=r.usage_in,
+            usage_out=r.usage_out,
+            latency_ms=r.latency_ms,
+            gen_tps=r.gen_tps,
+            ts=r.ts,
+            error=r.error,
+        )
+        for r in rows
+    ]
+    latencies = [float(r.latency_ms) for r in rows if r.latency_ms is not None]
+    return ModelMetricsDrilldown(calls=calls, p95_latency_ms=_p95(latencies))

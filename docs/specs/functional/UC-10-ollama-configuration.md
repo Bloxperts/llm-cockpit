@@ -1,7 +1,7 @@
-<!-- Status: Accepted | Version: 0.1 | Created: 2026-04-27 -->
+<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-27 | Updated: 2026-04-28 -->
 # UC-10 · Functional Spec — Admin: Ollama configuration + metrics
 
-**Status:** Accepted
+**Status:** Done (technical)
 **Depends on:** UC-01 (login), UC-07 (Ollama integration — `pull_model` and `delete_model` are on the same `LLMChat` port), ADR-004 (admin role + model tagging).
 **Min role:** `admin`.
 **User Spec:** [`../../use-cases/UC-10-ollama-configuration.md`](../../use-cases/UC-10-ollama-configuration.md)
