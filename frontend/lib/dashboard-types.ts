@@ -6,6 +6,10 @@ export interface GpuPayload {
   vram_total_mb: number;
   temp_c: number | null;
   power_w: number | null;
+  // Sprint 5b: configured power cap (`nvidia-smi --query-gpu=power.limit`).
+  // Used for the watts/TDP display + colour. Null when the column was
+  // [N/A] or the field isn't present in older snapshots.
+  max_power_w: number | null;
 }
 
 export interface ModelConfigPayload {

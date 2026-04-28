@@ -22,6 +22,11 @@ class GpuSnapshot:
     vram_total_mb: int
     temp_c: float | None
     power_w: float | None
+    # Sprint 5b: configured power cap (`nvidia-smi --query-gpu=power.limit`).
+    # Static for the lifetime of the GPU power-cap setting; the dashboard
+    # divides current `power_w` by this to colour the watts indicator.
+    # Optional with a default so existing call sites keep compiling.
+    max_power_w: int | None = None
 
 
 @runtime_checkable

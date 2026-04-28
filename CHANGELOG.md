@@ -3,6 +3,58 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.1.3] — 2026-04-28 — Dashboard GPU UX + model context display
+
+UI-layer slice on top of v0.1.2. No new use cases or DB tables; falls under
+the existing Accepted UC-02 functional spec.
+
+### Added
+
+- **GPU temperature status badge** on each card in the dashboard's GPU
+  strip. Replaces the placeholder VRAM/temp gradient bar with a four-level
+  status pill keyed off the RTX 3090 (Ampere GPU Boost 4.0) thresholds:
+  - **Good** ≤ 70 °C — emerald.
+  - **Workload** 71–82 °C — sky.
+  - **Throttling** 83–89 °C — amber. GPU Boost starts clock reduction at
+    ~83 °C.
+  - **Critical** ≥ 90 °C — rose. Approaching TjMax 93 °C, shutdown risk.
+  Raw °C is still shown alongside the badge so operators always have the
+  number. Hover-title carries the threshold legend. When `temp_c` is null
+  (no telemetry), neither badge nor temp line renders.
+- **Watts vs. TDP** line on each GPU card:
+  `152 W / 350 W` instead of just `152 W`. Current value is colour-coded
+  (emerald ≤ 70 %, amber 71–90 %, rose > 90 %) by percentage of the cap.
+  TDP comes from `nvidia-smi --query-gpu=power.limit`; falls back to 350 W
+  when the column is `[N/A]`.
+- **Configured context** line on every model card:
+  `ctx 8 192` from `model_config.num_ctx_default`. Displays `ctx —` when
+  no row exists or the value is null. Helps admins see each model's VRAM
+  budget at a glance without opening the settings drawer.
+
+### Backend
+
+- `GpuSnapshot` (port) gains an optional `max_power_w: int | None`.
+- `NvidiaSmiTelemetry` adapter extends its `--query-gpu=` argument with
+  `power.limit`; parses the new column with the same `[N/A]` handling as
+  the existing nullable columns. Float values are coerced to int.
+- `GpuPayload` (Pydantic schema) and `_serialize_gpu` propagate
+  `max_power_w` into the `/api/dashboard/snapshot` payload.
+- `gpu_snapshot()` test factory in `adapters/fake_telemetry.py` accepts
+  `max_power_w=None` by default; existing UC-02 tests build snapshots
+  without specifying it and still validate.
+
+### Tests
+
+- `tests/test_uc02_telemetry.py`:
+  - `test_sample_parses_canonical_two_gpu_csv` — the canonical CSV row
+    now includes the `power.limit` column; assertion includes
+    `max_power_w=350`.
+  - `test_sample_handles_n_a_columns` — the `[N/A]` row gets a third
+    `[N/A]` column; assertion includes `max_power_w is None`.
+  - `test_sample_parses_power_limit_when_present` — explicit float
+    coercion check (`350.00` → `350`).
+- 286 tests collected, all green.
+
 ## [v0.1.2] — 2026-04-28 — Chat UX improvements + visual polish
 
 UI-layer slice on top of Sprint 4. No new use cases, ports, or DB tables —

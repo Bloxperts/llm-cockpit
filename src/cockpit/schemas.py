@@ -54,6 +54,10 @@ class GpuPayload(BaseModel):
     vram_total_mb: int
     temp_c: float | None
     power_w: float | None
+    # Sprint 5b: configured power cap (`nvidia-smi --query-gpu=power.limit`).
+    # Default `None` so existing tests / payloads that don't carry the field
+    # still validate.
+    max_power_w: int | None = None
 
 
 class ModelConfigPayload(BaseModel):
