@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     nvidia_smi_path: str = ""
     sample_interval_s: int = DEFAULT_SAMPLE_INTERVAL_S
 
+    # UC-06b: per-user code working folder root. None → `<data_dir>/code_files/`.
+    # Override via `COCKPIT_CODE_FILES_DIR` env or `[paths] code_files_dir`
+    # in config.toml.
+    code_files_dir: Path | None = None
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / self.db_file
@@ -78,6 +83,13 @@ class Settings(BaseSettings):
     @property
     def db_url(self) -> str:
         return f"sqlite:///{self.db_path}"
+
+    @property
+    def resolved_code_files_dir(self) -> Path:
+        """Per-user code workspace root. The router creates the per-user
+        subfolder lazily on first access.
+        """
+        return self.code_files_dir or (self.data_dir / "code_files")
 
     @classmethod
     def from_toml(cls, path: Path) -> Settings:
@@ -124,6 +136,8 @@ class Settings(BaseSettings):
                 kwargs["db_file"] = paths["db_file"]
             if "log_file" in paths:
                 kwargs["log_file"] = paths["log_file"]
+            if paths.get("code_files_dir"):
+                kwargs["code_files_dir"] = Path(paths["code_files_dir"])
         return cls(**kwargs)
 
 

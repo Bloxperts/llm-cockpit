@@ -1,7 +1,9 @@
-<!-- Status: Accepted | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-27 -->
+<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-28 -->
 # UC-06 · Functional Spec — Admin: User management
 
-**Status:** Accepted
+**Status:** Done (technical)
+<!-- VAULT-SYNC: implementation landed on develop in feature/UC-06-user-management → v0.2.0. Status flipped Accepted → In Progress → Done (technical). One small implementation note vs the spec's data model: the AdminAudit table on this branch carries `target_model: str | None` rather than the spec's `target_user_id INTEGER NULL`. The router stuffs both username and id into `details_json` so audit-log readers (UC-10) can extract them; if the audit-log filter view ever needs to JOIN on user_id, a small migration adds the column. Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off. -->
+
 **Depends on:** UC-01 (login), UC-09 (must_change_password flow for admin-created users), ADR-004 (role ladder).
 **Min role:** `admin`.
 **User Spec:** [`../../use-cases/UC-06-admin-controls.md`](../../use-cases/UC-06-admin-controls.md)

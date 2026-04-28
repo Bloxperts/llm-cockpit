@@ -39,6 +39,7 @@ export function AppHeader() {
     { href: "/dashboard/", label: "Dashboard", show: true },
     { href: "/chat/", label: "Chat", show: hasAtLeast(me.role, "chat") },
     { href: "/code/", label: "Code", show: hasAtLeast(me.role, "code") },
+    { href: "/admin/users/", label: "Users", show: me.role === "admin" },
   ];
 
   return (

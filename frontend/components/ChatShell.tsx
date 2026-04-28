@@ -71,6 +71,15 @@ interface ModelPickerEntry {
   size_bytes: number;
 }
 
+// Sprint 6 — workspace file entry. Mirrors `cockpit/schemas.py::FileEntry`.
+interface FileEntry {
+  name: string;
+  path: string;
+  size_bytes: number;
+  modified_at: string;
+  is_dir: boolean;
+}
+
 export function ChatShell({ mode }: { mode: "chat" | "code" }) {
   const apiPrefix = `/api/${mode}`;
   const thinkingStorageKey = `cockpit_thinking_${mode}`;
@@ -90,6 +99,25 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
 
   // Feature 3 — scroll-to-bottom.
   const [atBottom, setAtBottom] = useState(true);
+
+  // Sprint 6 — code workspace file panel (only meaningful when mode === 'code').
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const refreshFiles = useCallback(async () => {
+    if (mode !== "code") return;
+    try {
+      const list = await api<FileEntry[]>("/api/code/files");
+      setFiles(list);
+    } catch {
+      // Workspace may be empty or 401; surface elsewhere.
+    }
+  }, [mode]);
+
+  // react-markdown component map — built per-mode so the Save button only
+  // shows in code mode and its onSaved callback can refresh the file list.
+  const markdownComponents = useMemo(
+    () => buildMarkdownComponents(mode, refreshFiles),
+    [mode, refreshFiles],
+  );
 
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -147,8 +175,10 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
       } catch {
         /* picker stays empty if Ollama is unreachable */
       }
+      // Sprint 6: prime the workspace file list when this is the Code page.
+      if (mode === "code") void refreshFiles();
     })();
-  }, [apiPrefix, mode]);
+  }, [apiPrefix, mode, refreshFiles]);
 
   // Auto-scroll on new content (only when user is already at the bottom).
   useLayoutEffect(() => {
@@ -326,6 +356,10 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
             </li>
           ))}
         </ul>
+
+        {mode === "code" ? (
+          <FilesPanel files={files} onRefresh={refreshFiles} />
+        ) : null}
       </aside>
 
       {/* Main pane */}
@@ -379,6 +413,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                       // The persisted last-assistant has no streaming cursor
                       // — only the in-flight streaming bubble below does.
                       _isLast={isLast}
+                      components={markdownComponents}
                     />
                   );
                 })}
@@ -388,6 +423,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                     mode={mode}
                     streamingCursor
                     error={null}
+                    components={markdownComponents}
                   />
                 ) : null}
                 {selected.messages.length > 0 && !streaming ? (
@@ -506,11 +542,13 @@ function AssistantBubble({
   mode,
   streamingCursor,
   error,
+  components,
 }: {
   content: string;
   mode: "chat" | "code";
   streamingCursor: boolean;
   error: string | null;
+  components: Components;
 }) {
   const _ = mode;
   return (
@@ -519,10 +557,7 @@ function AssistantBubble({
         C
       </div>
       <div className="prose prose-neutral dark:prose-invert max-w-none text-sm leading-relaxed">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={markdownComponents}
-        >
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
           {content || (streamingCursor ? "" : "*(empty)*")}
         </ReactMarkdown>
         {streamingCursor ? <span className="cockpit-cursor" /> : null}
@@ -541,21 +576,20 @@ function MessageBubble({
   mode,
   streamingCursor,
   _isLast,
+  components,
 }: {
   m: MessagePayload;
   mode: "chat" | "code";
   streamingCursor: boolean;
   _isLast: boolean;
+  components: Components;
 }) {
   if (m.role === "user") {
     return (
       <article className="flex justify-end">
         <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 px-4 py-3 text-sm">
           <div className="prose prose-neutral dark:prose-invert prose-sm max-w-none">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={markdownComponents}
-            >
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
               {m.content}
             </ReactMarkdown>
           </div>
@@ -570,6 +604,7 @@ function MessageBubble({
         mode={mode}
         streamingCursor={streamingCursor}
         error={m.error}
+        components={components}
       />
       {m.usage_out || m.gen_tps ? (
         <div className="ml-12 mt-1 text-xs text-neutral-500 dark:text-neutral-400 font-mono">
@@ -588,29 +623,41 @@ function MessageBubble({
 // both inline (`foo`) and block (```lang\n...\n```) code. v10 dropped the
 // `inline` prop — we infer block-vs-inline from the language className +
 // presence of newlines in the content.
-const markdownComponents: Components = {
-  code({ className, children, ...props }) {
-    const text = String(children ?? "").replace(/\n$/, "");
-    const match = /language-(\w+)/.exec(className ?? "");
-    const isInline = !match && !text.includes("\n");
-    if (isInline) {
+//
+// Sprint 6: built per-mode so the Save-to-workspace button only renders
+// in code mode, and so its onSaved callback can refresh the Files panel.
+function buildMarkdownComponents(
+  mode: "chat" | "code",
+  onSaved?: () => void,
+): Components {
+  return {
+    code({ className, children, ...props }) {
+      const text = String(children ?? "").replace(/\n$/, "");
+      const match = /language-(\w+)/.exec(className ?? "");
+      const isInline = !match && !text.includes("\n");
+      if (isInline) {
+        return (
+          <code
+            className="bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-[0.85em] font-mono text-rose-600 dark:text-rose-400"
+            {...props}
+          >
+            {children}
+          </code>
+        );
+      }
+      const language = match ? match[1] : null;
       return (
-        <code
-          className="bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-[0.85em] font-mono text-rose-600 dark:text-rose-400"
-          {...props}
-        >
-          {children}
-        </code>
+        <CodeBlock language={language} mode={mode} onSaved={onSaved}>
+          {text}
+        </CodeBlock>
       );
-    }
-    const language = match ? match[1] : null;
-    return <CodeBlock language={language}>{text}</CodeBlock>;
-  },
-  // The default <pre> wrapper would double-pad our <CodeBlock>. Strip it.
-  pre({ children }) {
-    return <>{children}</>;
-  },
-};
+    },
+    // The default <pre> wrapper would double-pad our <CodeBlock>. Strip it.
+    pre({ children }) {
+      return <>{children}</>;
+    },
+  };
+}
 
 function ArrowDownIcon() {
   return (
@@ -635,5 +682,89 @@ function LoadingIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="animate-spin">
       <path d="M21 12a9 9 0 1 1-6.22-8.56" />
     </svg>
+  );
+}
+
+// Sprint 6 — workspace file drawer for the Code page sidebar.
+function FilesPanel({
+  files,
+  onRefresh,
+}: {
+  files: FileEntry[];
+  onRefresh: () => void;
+}) {
+  function fmtSize(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+  async function deleteFile(path: string) {
+    if (!window.confirm(`Delete ${path} from your workspace?`)) return;
+    try {
+      await api(`/api/code/files?path=${encodeURIComponent(path)}`, {
+        method: "DELETE",
+      });
+    } catch (e) {
+      alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      onRefresh();
+    }
+  }
+  return (
+    <div className="border-t border-neutral-800 mt-2">
+      <div className="px-3 pt-3 pb-1 flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Workspace
+        </h3>
+        <button
+          type="button"
+          onClick={onRefresh}
+          aria-label="Refresh file list"
+          className="text-xs text-neutral-400 hover:text-white"
+        >
+          ↻
+        </button>
+      </div>
+      {files.length === 0 ? (
+        <div className="px-3 pb-3 text-xs text-neutral-500 italic">
+          empty — use the Save button on a code block above
+        </div>
+      ) : (
+        <ul className="px-2 pb-3">
+          {files.map((f) => (
+            <li
+              key={f.path}
+              className="px-2 py-1.5 rounded-md hover:bg-neutral-800 text-sm"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-neutral-400 select-none" aria-hidden="true">
+                  📄
+                </span>
+                <span className="font-mono text-xs truncate flex-1" title={f.path}>
+                  {f.name}
+                </span>
+              </div>
+              <div className="ml-7 mt-0.5 flex items-center gap-2 text-[10px] text-neutral-500">
+                <span>{fmtSize(f.size_bytes)}</span>
+                <a
+                  href={`/api/code/files/download?path=${encodeURIComponent(f.path)}`}
+                  download={f.name}
+                  className="hover:text-white underline-offset-2 hover:underline"
+                >
+                  download
+                </a>
+                <button
+                  type="button"
+                  onClick={() => void deleteFile(f.path)}
+                  className="hover:text-rose-400"
+                >
+                  delete
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

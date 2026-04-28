@@ -7,6 +7,7 @@ live in `cockpit.models`.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -217,3 +218,57 @@ class ModelPickerEntry(BaseModel):
     name: str
     tag: str | None
     size_bytes: int
+
+
+# --- UC-06: admin user management ----------------------------------------
+
+
+class UserSummary(BaseModel):
+    """Per-row payload for the /api/admin/users table.
+
+    Token totals are aggregated from `messages` for assistant rows on the
+    user's conversations — see `services/users.get_token_totals()`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    username: str
+    role: str  # 'chat' | 'code' | 'admin' (ADR-004)
+    must_change_password: bool
+    created_at: datetime | None
+    last_login_at: datetime | None
+    deleted_at: datetime | None  # non-null = soft-deleted
+    tokens_in: int
+    tokens_out: int
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=31)
+    password: str = Field(..., min_length=8)
+    role: str = "chat"
+
+
+class PatchRoleRequest(BaseModel):
+    role: str
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=8)
+
+
+# --- UC-06b: code working folder -----------------------------------------
+
+
+class FileEntry(BaseModel):
+    name: str
+    path: str  # relative to user root, URL-safe (forward slashes only)
+    size_bytes: int
+    modified_at: datetime
+    is_dir: bool
+
+
+class SaveFileRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=512)
+    content: str
+    overwrite: bool = False
