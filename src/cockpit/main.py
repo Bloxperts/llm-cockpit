@@ -34,6 +34,7 @@ from cockpit.db import make_engine, make_session_factory, upgrade_to_head
 from cockpit.deps import get_session, get_settings
 from cockpit.ports.llm_chat import LLMChat, OllamaResponseError, OllamaUnreachableError
 from cockpit.ports.telemetry import Telemetry
+from cockpit.routers import admin_audit as admin_audit_router
 from cockpit.routers import admin_ollama as admin_ollama_router
 from cockpit.routers import admin_users as admin_users_router
 from cockpit.routers import auth as auth_router
@@ -147,6 +148,10 @@ def create_app(
             model_sampler = ModelStateSampler(
                 chat=sampler_chat,
                 state=app.state.model_state,
+                # UC-10: when a new model name is detected, reapply
+                # the tagging heuristic so it lands in `model_tags`
+                # automatically. Override rows are never touched.
+                session_factory=app.state.session_factory,
             )
             app.state.gpu_sampler = gpu_sampler
             app.state.model_sampler = model_sampler
@@ -231,6 +236,10 @@ def create_app(
     # UC-06 admin user management.
     app.include_router(
         admin_users_router.router, prefix="/api/admin/users", tags=["admin"]
+    )
+    # UC-10 unified audit log (login + admin).
+    app.include_router(
+        admin_audit_router.router, prefix="/api/admin/audit", tags=["admin"]
     )
     # UC-04 chat router carries its own `/api/...` prefixes on each route
     # (so it can host the shared `/api/models` picker alongside `/api/chat`),

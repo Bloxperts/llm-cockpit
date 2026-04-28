@@ -289,3 +289,85 @@ class SaveFileRequest(BaseModel):
     path: str = Field(..., min_length=1, max_length=512)
     content: str
     overwrite: bool = False
+
+
+# --- UC-10: admin Ollama configuration -----------------------------------
+
+
+class ModelTagPatchRequest(BaseModel):
+    """Body for PATCH /api/admin/ollama/models/{model}/tag."""
+
+    tag: str  # 'chat' | 'code' | 'both' (validated server-side)
+
+
+class ModelTagResponse(BaseModel):
+    model: str
+    tag: str
+    source: str  # 'auto' | 'override'
+
+
+class SettingsResponse(BaseModel):
+    code_default_system_prompt: str | None
+    tag_heuristics_yaml: str | None
+
+
+class SettingsPutRequest(BaseModel):
+    """All fields optional — partial-PUT semantics. Only keys actually
+    supplied are written. Empty string is *not* the same as None: an
+    empty-string `code_default_system_prompt` means "use the bundled
+    fallback"; None means "leave the existing value alone"."""
+
+    code_default_system_prompt: str | None = None
+    tag_heuristics_yaml: str | None = None
+
+
+class SettingsPutResponse(BaseModel):
+    updated: list[str]
+
+
+class ModelMetricsSummary(BaseModel):
+    """One row of GET /api/admin/ollama/metrics — last 7 days."""
+
+    model: str
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    mean_latency_ms: float | None
+    mean_gen_tps: float | None
+    last_call_at: datetime | None
+
+
+class ModelCallEntry(BaseModel):
+    """One row of the per-model drill-down — last 50 assistant calls."""
+
+    role: str
+    usage_in: int | None
+    usage_out: int | None
+    latency_ms: int | None
+    gen_tps: float | None
+    ts: datetime
+    error: str | None
+
+
+class ModelMetricsDrilldown(BaseModel):
+    calls: list[ModelCallEntry]
+    p95_latency_ms: float | None
+
+
+class AuditEntry(BaseModel):
+    """One row in the unified audit feed."""
+
+    source: str  # 'login' | 'admin'
+    ts: datetime
+    actor: str | None  # username if resolvable; None for failed logins
+    action: str
+    target: str | None  # username or model name
+    details: dict | None
+    source_ip: str | None
+
+
+class AuditResponse(BaseModel):
+    entries: list[AuditEntry]
+    total: int
+    page: int
+    per_page: int

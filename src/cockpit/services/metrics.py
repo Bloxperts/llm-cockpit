@@ -150,6 +150,13 @@ class ModelStateSampler:
 
     Errors set `state.last_error` and `state.last_error_at`; the dashboard
     surfaces this as the `ollama_unreachable` status.
+
+    UC-10 — when the available-model list changes (new model name
+    appears that we haven't seen before), the sampler triggers
+    `model_tags.reapply_heuristics()` so the new model gets a tag row
+    inserted automatically. Override rows are never touched. Pass
+    `session_factory=None` to disable this side effect (the v0.1
+    bootstrap path doesn't need it).
     """
 
     def __init__(
@@ -159,11 +166,15 @@ class ModelStateSampler:
         state: ModelStateSamplerState,
         interval_s: float = MODEL_STATE_SAMPLE_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
+        session_factory: sessionmaker[Session] | None = None,
     ) -> None:
         self.chat = chat
         self.state = state
         self.interval_s = interval_s
         self._clock = clock
+        self.session_factory = session_factory
+        # Set of model names we've already evaluated; populated lazily.
+        self._known_names: set[str] = set()
 
     async def sample_once(self) -> None:
         try:
@@ -184,6 +195,28 @@ class ModelStateSampler:
         self.state.loaded_models = loaded
         self.state.last_success_at = self._clock()
         self.state.last_error = None
+
+        # UC-10: reapply heuristics when the model list grows. We only
+        # care about new names — disappeared rows aren't deleted from
+        # `model_tags` (an admin who pulls a model back later wants
+        # their override to survive).
+        if self.session_factory is not None:
+            current_names = {m.name for m in available}
+            new_names = current_names - self._known_names
+            if new_names:
+                # Lazy import to keep `services/metrics.py` self-contained
+                # for tests that don't need the heuristic side effect.
+                from cockpit.services.model_tags import reapply_heuristics
+
+                try:
+                    with self.session_factory() as session:
+                        reapply_heuristics(session, sorted(current_names))
+                        session.commit()
+                except Exception as exc:  # pragma: no cover — defensive
+                    log.warning(
+                        "ModelStateSampler: heuristic reapply failed: %s", exc
+                    )
+                self._known_names = current_names
 
     async def run(self) -> None:
         while True:
