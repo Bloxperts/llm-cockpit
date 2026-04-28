@@ -45,6 +45,14 @@ class User(Base):
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Sprint 7 — auth UX. See migration 0003_auth_ux.py for column docs.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    session_ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
 
     __table_args__ = (
         CheckConstraint("role IN ('chat', 'code', 'admin')", name="ck_users_role"),

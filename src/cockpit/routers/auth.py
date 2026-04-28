@@ -36,6 +36,7 @@ from cockpit.schemas import (
     LoginRequest,
     LoginResponse,
     MeResponse,
+    SessionTtlRequest,
 )
 from cockpit.services.users import (
     DEFAULT_ADMIN_PASSWORD,
@@ -119,13 +120,54 @@ def get_rate_limiter(request: Request) -> RateLimiter:
 # --- JWT + cookie helpers --------------------------------------------------
 
 
-def _create_token(user_id: int, ttl_seconds: int, secret: str) -> str:
+def _create_token(
+    user_id: int,
+    ttl_seconds: int,
+    secret: str,
+    *,
+    token_version: int = 0,
+) -> str:
+    """Mint a JWT carrying `sub`, `tkv`, and `exp`.
+
+    Sprint 7 added the `tkv` claim — it must equal the user's current
+    `token_version` for the token to validate. Bumping the column
+    invalidates every outstanding token in O(1) (no token blacklist
+    needed). `token_version` is a keyword-only arg with a default of 0
+    so existing test fixtures that don't supply it stay working.
+    """
     exp = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
     return jwt.encode(
-        {"sub": str(user_id), "exp": int(exp.timestamp())},
+        {"sub": str(user_id), "tkv": int(token_version), "exp": int(exp.timestamp())},
         secret,
         algorithm=JWT_ALG,
     )
+
+
+# Sprint 7 — per-user JWT lifetime preference. Values are days; 0 means
+# "essentially unlimited" (10 years). The PATCH endpoint validates that
+# `ttl_days` is a key in this dict.
+TTL_MAP: dict[int, int] = {
+    1: 86_400,
+    7: 7 * 86_400,
+    30: 30 * 86_400,
+    0: 10 * 365 * 86_400,
+}
+DEFAULT_TTL_DAYS = 7
+
+
+def _user_ttl_seconds(user: User) -> int:
+    """Resolve the user's preferred token lifetime in seconds.
+
+    NULL preference → fall back to the system default (7 days). Unknown
+    values (shouldn't happen — endpoint validates) also fall back so a
+    misconfigured row never breaks login.
+    """
+    days = (
+        user.session_ttl_days
+        if user.session_ttl_days is not None
+        else DEFAULT_TTL_DAYS
+    )
+    return TTL_MAP.get(days, TTL_MAP[DEFAULT_TTL_DAYS])
 
 
 def _decode_token(token: str, secret: str) -> dict:
@@ -205,13 +247,29 @@ def current_user(
     if user is None or user.deleted_at is not None:
         raise HTTPException(401, detail="not_authenticated")
 
-    # Sliding renewal — UC-01 F5.
+    # Sprint 7: deactivated accounts can't act on existing sessions.
+    # Distinct from `not_authenticated` so the frontend can show a useful
+    # message instead of a generic "log in again".
+    if not user.is_active:
+        raise HTTPException(401, detail="account_disabled")
+
+    # Sprint 7: token-version revocation (admin "Force re-login" + auto-
+    # invalidation on deactivate). A bumped `users.token_version` makes
+    # every JWT minted with the prior version fail validation — no token
+    # blacklist needed.
+    if int(payload.get("tkv", 0)) != int(user.token_version):
+        raise HTTPException(401, detail="session_revoked")
+
+    # Sliding renewal — UC-01 F5. Sprint 7 honours the user's preferred
+    # TTL when re-issuing.
     exp_ts = payload.get("exp")
     if exp_ts is not None:
         exp_dt = datetime.fromtimestamp(int(exp_ts), tz=timezone.utc)
         if exp_dt - datetime.now(timezone.utc) < SLIDING_RENEWAL_THRESHOLD:
-            ttl = settings.session_days * 86400
-            fresh = _create_token(user.id, ttl, settings.jwt_secret)
+            ttl = _user_ttl_seconds(user)
+            fresh = _create_token(
+                user.id, ttl, settings.jwt_secret, token_version=user.token_version
+            )
             _set_cookie(response, fresh, ttl)
 
     return user
@@ -308,13 +366,30 @@ def login(
         raise HTTPException(401, detail="Invalid credentials")
 
     assert user is not None  # narrows for the type checker
+
+    # Sprint 7: deactivated accounts are blocked at login. We log the
+    # attempt as a *failed* login (with a distinct action) so the audit
+    # trail captures attempts to use a disabled account.
+    if not user.is_active:
+        _audit(
+            db,
+            username=user.username,
+            success=False,
+            source_ip=source_ip,
+            action="login_blocked_inactive",
+        )
+        db.commit()
+        raise HTTPException(403, detail="account_disabled")
+
     _audit(db, username=user.username, success=True, source_ip=source_ip, action="login")
     update_last_login(db, user)
     db.commit()
     limiter.record_success(body.username)
 
-    ttl = settings.session_days * 86400
-    token = _create_token(user.id, ttl, settings.jwt_secret)
+    ttl = _user_ttl_seconds(user)
+    token = _create_token(
+        user.id, ttl, settings.jwt_secret, token_version=user.token_version
+    )
     _set_cookie(response, token, ttl)
 
     return LoginResponse(
@@ -323,9 +398,37 @@ def login(
             username=user.username,
             role=user.role,
             must_change_password=bool(user.must_change_password),
+            session_ttl_days=user.session_ttl_days,
         ),
         ttl_seconds=ttl,
     )
+
+
+@router.patch("/session-ttl")
+def set_session_ttl(
+    body: SessionTtlRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+) -> dict:
+    """Sprint 7 — let a user pick their preferred JWT lifetime.
+
+    Validation: `ttl_days` must be one of {0, 1, 7, 30}. `0` means
+    "essentially unlimited" (10 years). The change applies to the next
+    token minted (login or sliding renewal); the current cookie keeps
+    its existing TTL until then.
+    """
+    if body.ttl_days not in TTL_MAP:
+        raise HTTPException(
+            422,
+            detail={
+                "detail": "invalid_ttl_days",
+                "allowed": sorted(TTL_MAP.keys()),
+            },
+        )
+    user.session_ttl_days = body.ttl_days
+    db.flush()
+    db.commit()
+    return {"ttl_days": body.ttl_days}
 
 
 @router.get("/me", response_model=MeResponse)
@@ -335,6 +438,7 @@ def me(user: User = Depends(current_user)) -> MeResponse:
         username=user.username,
         role=user.role,
         must_change_password=bool(user.must_change_password),
+        session_ttl_days=user.session_ttl_days,
     )
 
 
@@ -403,7 +507,10 @@ def change_password(
     db.commit()
 
     # Re-issue cookie so the user gets a fresh full-TTL session post-change.
-    ttl = settings.session_days * 86400
-    token = _create_token(user.id, ttl, settings.jwt_secret)
+    # Honour the user's preferred TTL (Sprint 7) and current token_version.
+    ttl = _user_ttl_seconds(user)
+    token = _create_token(
+        user.id, ttl, settings.jwt_secret, token_version=user.token_version
+    )
     _set_cookie(response, token, ttl)
     return {}

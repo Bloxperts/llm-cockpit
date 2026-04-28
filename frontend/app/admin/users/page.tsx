@@ -22,6 +22,11 @@ interface UserSummary {
   deleted_at: string | null;
   tokens_in: number;
   tokens_out: number;
+  // Sprint 7 — `is_active = 0` means the account is deactivated (login
+  // blocked, sessions revoked) but not deleted. Backend defaults old
+  // rows to 1; if the column happens to be missing in a snapshot we
+  // treat absent-or-truthy as active.
+  is_active?: number;
 }
 
 interface ApiErrorBody {
@@ -113,6 +118,55 @@ export default function AdminUsersPage() {
     }
   }
 
+  async function revokeSessions(u: UserSummary) {
+    if (
+      !window.confirm(
+        `Force re-login for ${u.username}? All their existing sessions will be invalidated immediately.`,
+      )
+    )
+      return;
+    try {
+      await api(`/api/admin/users/${u.id}/revoke-sessions`, { method: "POST" });
+      // No need to refresh — token_version isn't shown in the table.
+      alert(`Sessions revoked for ${u.username}.`);
+    } catch (e) {
+      if (e instanceof ApiError) {
+        alert(`Cannot revoke sessions: HTTP ${e.status}`);
+      }
+    }
+  }
+
+  async function deactivate(u: UserSummary) {
+    if (
+      !window.confirm(
+        `Deactivate ${u.username}? Login is blocked and active sessions are revoked. You can reactivate later.`,
+      )
+    )
+      return;
+    try {
+      await api(`/api/admin/users/${u.id}/deactivate`, { method: "POST" });
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError) {
+        const body = e.detail as ApiErrorBody | undefined;
+        const detail =
+          typeof body?.detail === "object" ? body.detail?.detail : body?.detail;
+        alert(`Cannot deactivate: ${detail ?? `HTTP ${e.status}`}`);
+      }
+    }
+  }
+
+  async function reactivate(u: UserSummary) {
+    try {
+      await api(`/api/admin/users/${u.id}/reactivate`, { method: "POST" });
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError) {
+        alert(`Cannot reactivate: HTTP ${e.status}`);
+      }
+    }
+  }
+
   async function deleteUser(u: UserSummary) {
     if (u.id === me?.id) {
       alert("You cannot delete your own account.");
@@ -183,11 +237,13 @@ export default function AdminUsersPage() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {users.map((u) => {
+                  const inactive = u.is_active === 0;
+                  return (
                   <tr
                     key={u.id}
                     className={`border-t border-neutral-200 dark:border-neutral-800 ${
-                      u.deleted_at ? "opacity-50" : ""
+                      u.deleted_at || inactive ? "opacity-60" : ""
                     }`}
                   >
                     <td className="px-3 py-2">
@@ -195,6 +251,11 @@ export default function AdminUsersPage() {
                       {u.deleted_at ? (
                         <span className="ml-2 text-xs text-rose-600 dark:text-rose-400">
                           deleted
+                        </span>
+                      ) : null}
+                      {!u.deleted_at && inactive ? (
+                        <span className="ml-2 text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400">
+                          inactive
                         </span>
                       ) : null}
                       {u.must_change_password ? (
@@ -240,6 +301,34 @@ export default function AdminUsersPage() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => void revokeSessions(u)}
+                        disabled={!!u.deleted_at}
+                        title="Force re-login — invalidates all outstanding sessions"
+                        className="text-xs rounded-md border border-neutral-300 dark:border-neutral-700 px-2 py-1 mr-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+                      >
+                        Force re-login
+                      </button>
+                      {inactive ? (
+                        <button
+                          type="button"
+                          onClick={() => void reactivate(u)}
+                          disabled={!!u.deleted_at}
+                          className="text-xs rounded-md border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 px-2 py-1 mr-1 hover:bg-emerald-50 dark:hover:bg-emerald-950 disabled:opacity-50"
+                        >
+                          Reactivate
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void deactivate(u)}
+                          disabled={!!u.deleted_at || u.id === me.id}
+                          className="text-xs rounded-md border border-amber-300 dark:border-amber-800 text-amber-700 dark:text-amber-400 px-2 py-1 mr-1 hover:bg-amber-50 dark:hover:bg-amber-950 disabled:opacity-50"
+                        >
+                          Deactivate
+                        </button>
+                      )}
+                      <button
+                        type="button"
                         onClick={() => void deleteUser(u)}
                         disabled={!!u.deleted_at || u.id === me.id}
                         className="text-xs rounded-md border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-400 px-2 py-1 hover:bg-rose-50 dark:hover:bg-rose-950 disabled:opacity-50"
@@ -248,7 +337,8 @@ export default function AdminUsersPage() {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

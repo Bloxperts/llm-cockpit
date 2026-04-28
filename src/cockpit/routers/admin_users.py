@@ -71,6 +71,7 @@ def _serialize_user(
         deleted_at=u.deleted_at,
         tokens_in=tin,
         tokens_out=tout,
+        is_active=int(u.is_active or 0),
     )
 
 
@@ -213,6 +214,125 @@ def reset_password(
         db,
         actor_id=actor.id,
         action="password_reset_by_admin",
+        target_model=target.username,
+        details={"target_user_id": target.id, "username": target.username},
+        source_ip=_client_ip(request),
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.post(
+    "/{user_id}/revoke-sessions",
+    summary="Force re-login for a user — invalidates all outstanding tokens.",
+)
+def revoke_sessions(
+    user_id: int,
+    request: Request,
+    actor: User = Depends(require_role_settled("admin")),
+    db: Session = Depends(get_session),
+) -> dict:
+    """Sprint 7. Bumps `users.token_version`; the JWT validator in
+    `current_user` rejects every previously-minted token (`tkv` mismatch
+    → 401 session_revoked). Admins can revoke any account, including
+    their own — they'll just be redirected to /login on the next request.
+    """
+    target = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if target is None or target.deleted_at is not None:
+        raise HTTPException(404, detail="user_not_found")
+
+    target.token_version = (target.token_version or 0) + 1
+    db.flush()
+
+    write_admin_audit(
+        db,
+        actor_id=actor.id,
+        action="sessions_revoked",
+        target_model=target.username,
+        details={
+            "target_user_id": target.id,
+            "username": target.username,
+            "new_token_version": target.token_version,
+        },
+        source_ip=_client_ip(request),
+    )
+    db.commit()
+    return {"ok": True, "token_version": target.token_version}
+
+
+@router.post(
+    "/{user_id}/deactivate",
+    summary="Deactivate a user (login disabled; sessions revoked).",
+)
+def deactivate_user(
+    user_id: int,
+    request: Request,
+    actor: User = Depends(require_role_settled("admin")),
+    db: Session = Depends(get_session),
+) -> dict:
+    """Sprint 7. Sets `is_active = 0` and bumps `token_version` so the
+    user is logged out of every active session immediately. Distinct
+    from soft-delete — a deactivated account can be reactivated by an
+    admin; a soft-deleted one is gone for good.
+
+    Refuses to deactivate the last *active* admin so the cockpit always
+    has at least one operator who can log in.
+    """
+    target = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if target is None or target.deleted_at is not None:
+        raise HTTPException(404, detail="user_not_found")
+    if not target.is_active:
+        return {"ok": True, "already": "deactivated"}
+
+    if target.role == "admin" and count_active_admins(db) <= 1:
+        raise HTTPException(400, detail={"detail": "last_active_admin"})
+
+    target.is_active = 0
+    target.token_version = (target.token_version or 0) + 1
+    db.flush()
+
+    write_admin_audit(
+        db,
+        actor_id=actor.id,
+        action="user_deactivated",
+        target_model=target.username,
+        details={
+            "target_user_id": target.id,
+            "username": target.username,
+            "role": target.role,
+        },
+        source_ip=_client_ip(request),
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.post(
+    "/{user_id}/reactivate",
+    summary="Reactivate a deactivated user.",
+)
+def reactivate_user(
+    user_id: int,
+    request: Request,
+    actor: User = Depends(require_role_settled("admin")),
+    db: Session = Depends(get_session),
+) -> dict:
+    """Sprint 7. Sets `is_active = 1`. Doesn't bump `token_version` —
+    the user has to log in fresh anyway (their old tokens were already
+    invalidated by the deactivation that triggered this)."""
+    target = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if target is None or target.deleted_at is not None:
+        raise HTTPException(404, detail="user_not_found")
+    if target.is_active:
+        return {"ok": True, "already": "active"}
+
+    target.is_active = 1
+    db.flush()
+
+    write_admin_audit(
+        db,
+        actor_id=actor.id,
+        action="user_reactivated",
         target_model=target.username,
         details={"target_user_id": target.id, "username": target.username},
         source_ip=_client_ip(request),

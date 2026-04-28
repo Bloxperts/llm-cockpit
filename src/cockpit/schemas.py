@@ -22,12 +22,16 @@ class MeResponse(BaseModel):
     """Identity payload used by `GET /api/auth/me` and embedded in
     `LoginResponse.user`. The `must_change_password` field tells the frontend
     whether to redirect the user through the UC-09 forced-change flow.
+
+    Sprint 7 added `session_ttl_days` so the frontend's preferences UI
+    can show the current preference. `None` = system default (7 days).
     """
 
     id: int
     username: str
     role: str  # 'chat' | 'code' | 'admin' (ADR-004; enforced at the DB CHECK)
     must_change_password: bool
+    session_ttl_days: int | None = None  # 0 / 1 / 7 / 30; None = default (7)
 
 
 class LoginResponse(BaseModel):
@@ -40,6 +44,16 @@ class ChangePasswordRequest(BaseModel):
 
     new_password: str
     confirm_password: str
+
+
+class SessionTtlRequest(BaseModel):
+    """Sprint 7 — per-user JWT-lifetime preference.
+
+    Allowed values: 0 (essentially unlimited / 10 years), 1, 7, 30 days.
+    The auth router validates against the canonical `TTL_MAP` keys.
+    """
+
+    ttl_days: int
 
 
 class LogoutResponse(BaseModel):
@@ -241,6 +255,9 @@ class UserSummary(BaseModel):
     deleted_at: datetime | None  # non-null = soft-deleted
     tokens_in: int
     tokens_out: int
+    # Sprint 7 — soft-deactivation flag distinct from `deleted_at`.
+    # 0 = login blocked (reactivatable); 1 = active.
+    is_active: int = 1
 
 
 class CreateUserRequest(BaseModel):

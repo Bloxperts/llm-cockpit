@@ -3,6 +3,123 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.2.1] — 2026-04-28 — Auth UX + Session control
+
+Patch on top of v0.2.0. Adds five auth-surface improvements driven by
+real-world operational needs after Sprint 6 landed: a perceptibly faster
+chat send, voluntary password change for any user, a per-user JWT
+lifetime preference, and admin-side session revocation + soft-deactivation
+distinct from soft-delete. No new use cases — these slot under UC-01,
+UC-04, UC-06, and UC-09.
+
+### Added — Chat UX
+
+- **Optimistic user-message rendering.** `ChatShell.sendMessage()` now
+  pushes the user bubble into the conversation immediately on submit (with
+  a sentinel `id=-1`) instead of waiting for the post-stream conversation
+  refresh to confirm the row. Eliminates the dead second between hitting
+  Enter and seeing your own text. The sentinel row is replaced by the
+  authoritative server row when the conversation reloads after the stream
+  closes.
+
+### Added — Account self-service
+
+- **`AppHeader` user menu.** The plain "Log out" button is now a dropdown
+  showing `username · role`, with three actions:
+  - **Change password** — link to `/change-password` (the same flow UC-09
+    drives on forced change, but voluntary). Available to every role.
+  - **Session duration** — `<select>` with **1 day / 7 days / 30 days /
+    Unlimited** options. Calls `PATCH /api/auth/session-ttl`; the new
+    preference applies on next login and to every sliding renewal from
+    that point.
+  - **Log out** — unchanged behaviour.
+
+  The menu closes on outside-click and Escape; tab order matches visual
+  order.
+
+### Added — Per-user session TTL preference
+
+- **`users.session_ttl_days`** column (nullable). `NULL` means "use the
+  system default (7 days)"; otherwise must be one of `0` (effectively
+  unlimited — 10 years), `1`, `7`, or `30`.
+- **`PATCH /api/auth/session-ttl`** — the only endpoint that writes the
+  column. Validates against the canonical `TTL_MAP` keys; rejects every
+  other value with `422`. Login + sliding-renewal both consult
+  `_user_ttl_seconds(user)` so the preference takes effect on the very
+  next request after login.
+- **`MeResponse.session_ttl_days`** — surfaced on `GET /api/auth/me` and
+  in the login payload so the frontend dropdown can show the current
+  setting without an extra round-trip.
+
+### Added — Admin: force re-login (token revocation)
+
+- **`users.token_version`** column (`NOT NULL DEFAULT 0`). Every JWT
+  carries a `tkv` claim copied from the user's `token_version` at issue
+  time; the auth dependency rejects any token whose `tkv` doesn't match
+  the live row (`401 session_revoked`).
+- **`POST /api/admin/users/{user_id}/revoke-sessions`** — bumps
+  `token_version` by one. Every previously-minted token for that user
+  fails the next request and the user lands on `/login`. Admins may
+  revoke their own sessions (the next request bounces them to login,
+  same as anyone else). Audit action `sessions_revoked`.
+
+### Added — Admin: deactivate / reactivate
+
+- **`users.is_active`** column (`NOT NULL DEFAULT 1`). Distinct from
+  `deleted_at` — a deactivated account can be restored by an admin; a
+  soft-deleted one is gone for good and the username can't be reused.
+- **`POST /api/admin/users/{user_id}/deactivate`** — sets `is_active=0`
+  **and** bumps `token_version` so existing sessions are invalidated
+  immediately, not just blocked at next login. Refuses to deactivate the
+  last *active* admin (`400 last_active_admin`). Idempotent (returns
+  `{"already": "deactivated"}` if already off). Audit `user_deactivated`.
+- **`POST /api/admin/users/{user_id}/reactivate`** — sets `is_active=1`.
+  Doesn't bump `token_version` (the user has no live tokens to invalidate
+  — the deactivate that triggered this already cleared them). Idempotent.
+  Audit `user_reactivated`.
+- **Login gate** — `POST /api/auth/login` now returns `403 account_disabled`
+  for inactive accounts (audited as `login_blocked_inactive`) instead of
+  silently issuing a token they can't use.
+- **`/admin/users` page** — gains a per-row **Force re-login** button and
+  a paired **Deactivate / Reactivate** button that swaps based on the
+  row's `is_active` flag. Inactive rows render with a dimmed style and an
+  "inactive" badge. The existing **Delete** button is unchanged.
+
+### Changed — Authorization guards
+
+- **`count_active_admins()`** now also requires `is_active = 1`. The
+  existing UC-06 demote / delete guards (`cannot_demote_last_admin`,
+  `cannot_delete_last_admin`) automatically pick up the new semantics
+  along with the new deactivate guard — one count, three guards.
+
+### Migration
+
+- **`0004_auth_ux.py`** — adds `token_version`, `session_ttl_days`,
+  `is_active` to `users`. All three carry sensible server defaults so
+  existing rows back-fill without a separate UPDATE; the migration is a
+  pure `ADD COLUMN` and reversible.
+
+### Tests
+
+- **`tests/test_sprint7_auth.py`** (26 tests):
+  - `PATCH /session-ttl` — valid days (parametrized 0/1/7/30), invalid
+    `14 → 422`, auth required, login uses new TTL after change, `/me`
+    surfaces the new value.
+  - `revoke-sessions` — invalidates outstanding token (`401
+    session_revoked`), audit row shape, admin-only, `404` for missing
+    user, admin can revoke self.
+  - `deactivate` — blocks login (`403 account_disabled`), kicks existing
+    session, last-active-admin guard (`400`), works when another active
+    admin exists, idempotent, `404` for missing, admin-only.
+  - `reactivate` — restores login, idempotent.
+  - Defaults: `token_version=0`, `is_active=1`, `session_ttl_days=NULL`.
+- **`tests/test_uc01_auth.py`** — `test_jwt_carries_only_sub_no_role`
+  renamed to `test_jwt_carries_only_sub_tkv_exp_no_role`; asserts the
+  three-key payload (`sub`, `tkv`, `exp`) and that `tkv` echoes the
+  `token_version` argument.
+- **365 tests collected total, all green.** Coverage on touched modules:
+  `routers/auth.py` 95 %, `routers/admin_users.py` 96 %.
+
 ## [v0.2.0] — 2026-04-28 — User management + code workspace
 
 Minor-version bump (UC-06): the cockpit gains a real admin user-management
