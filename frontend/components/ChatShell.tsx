@@ -271,6 +271,31 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
     if (!selected || !draft.trim() || streaming) return;
     const content = draft;
     setDraft("");
+    // Sprint 7 — optimistic UI: render the user's bubble immediately,
+    // before the stream event arrives. The id=-1 sentinel is replaced
+    // when the conversation reloads on the `done` event.
+    setSelected((prev) =>
+      prev
+        ? {
+            ...prev,
+            messages: [
+              ...prev.messages,
+              {
+                id: -1,
+                role: "user",
+                content,
+                model: prev.model,
+                usage_in: null,
+                usage_out: null,
+                gen_tps: null,
+                latency_ms: null,
+                ts: new Date().toISOString(),
+                error: null,
+              },
+            ],
+          }
+        : prev,
+    );
     await consumeStream(`${apiPrefix}/${selected.id}/stream`, {
       content,
       think: thinkingEnabled,

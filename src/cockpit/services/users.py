@@ -112,14 +112,25 @@ def is_valid_role(role: str) -> bool:
 
 
 def count_active_admins(session: Session) -> int:
-    """Count not-soft-deleted users with role='admin'. Used by the
-    last-admin-demotion / cannot-delete-self guard.
+    """Count admins that are usable: not soft-deleted AND not deactivated.
+
+    Used by:
+      - the last-admin-demotion guard (PATCH /role)
+      - the cannot-delete-last-admin guard (DELETE)
+      - the cannot-deactivate-last-active-admin guard (Sprint 7).
+
+    Sprint 7 added the `is_active` column; rows with `is_active = 0`
+    can't log in, so they don't count toward "the last admin standing".
     """
     return (
         session.execute(
             select(func.count())
             .select_from(User)
-            .where(User.role == "admin", User.deleted_at.is_(None))
+            .where(
+                User.role == "admin",
+                User.deleted_at.is_(None),
+                User.is_active == 1,
+            )
         ).scalar_one()
     )
 

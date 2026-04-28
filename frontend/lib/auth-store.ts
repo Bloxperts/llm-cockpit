@@ -7,6 +7,8 @@ export interface Me {
   username: string;
   role: Role;
   must_change_password: boolean;
+  // Sprint 7 — JWT lifetime preference. Null = default (7 days).
+  session_ttl_days?: number | null;
 }
 
 interface AuthState {

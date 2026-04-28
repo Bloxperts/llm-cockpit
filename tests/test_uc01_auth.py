@@ -452,15 +452,25 @@ def test_role_flip_takes_effect_on_next_request(
     assert r.json()["role"] == "chat"
 
 
-def test_jwt_carries_only_sub_no_role(
+def test_jwt_carries_only_sub_tkv_exp_no_role(
     settings: Settings, seeded_users: dict
 ) -> None:
-    """The JWT payload contains `sub` and `exp`, nothing else — no role."""
-    token = _create_token(user_id=42, ttl_seconds=600, secret=settings.jwt_secret)
+    """The JWT payload contains `sub`, `tkv`, and `exp`, nothing else.
+
+    Sprint 7 added `tkv` (token_version) to the claim set so the server
+    can revoke all outstanding tokens by bumping a counter. The claim
+    list deliberately stays minimal — no role, no permissions, no
+    user-supplied metadata that could be tampered with.
+    """
+    token = _create_token(
+        user_id=42, ttl_seconds=600, secret=settings.jwt_secret, token_version=3
+    )
     payload = jwt.decode(token, settings.jwt_secret, algorithms=[JWT_ALG])
     assert payload["sub"] == "42"
+    assert payload["tkv"] == 3
     assert "exp" in payload
     assert "role" not in payload
+    assert set(payload.keys()) == {"sub", "tkv", "exp"}
 
 
 # --- F5 sliding renewal --------------------------------------------------
