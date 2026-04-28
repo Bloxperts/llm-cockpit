@@ -59,12 +59,18 @@ def gpu_snapshot(
     vram_total_mb: int = 24000,
     temp_c: float | None = 65.0,
     power_w: float | None = 200.0,
+    max_power_w: int | None = None,
 ) -> GpuSnapshot:
-    """Convenience factory used in tests."""
+    """Convenience factory used in tests. `max_power_w` defaults to None so
+    existing tests don't have to thread a value through; pass an int (e.g.
+    350 for an RTX 3090) when the test specifically exercises the watts /
+    TDP display.
+    """
     return GpuSnapshot(
         index=index,
         vram_used_mb=vram_used_mb,
         vram_total_mb=vram_total_mb,
         temp_c=temp_c,
         power_w=power_w,
+        max_power_w=max_power_w,
     )

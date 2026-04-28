@@ -50,7 +50,7 @@ async def test_sample_parses_canonical_two_gpu_csv(tmp_path) -> None:
 
     runner = AsyncMock(
         return_value=_proc_returning(
-            b"0, 14530, 24576, 71, 240\n1, 22195, 24576, 75, 290\n"
+            b"0, 14530, 24576, 71, 240, 350\n1, 22195, 24576, 75, 290, 350\n"
         )
     )
     adapter = NvidiaSmiTelemetry(
@@ -59,8 +59,8 @@ async def test_sample_parses_canonical_two_gpu_csv(tmp_path) -> None:
     snapshots = await adapter.sample()
 
     assert snapshots == [
-        GpuSnapshot(index=0, vram_used_mb=14530, vram_total_mb=24576, temp_c=71.0, power_w=240.0),
-        GpuSnapshot(index=1, vram_used_mb=22195, vram_total_mb=24576, temp_c=75.0, power_w=290.0),
+        GpuSnapshot(index=0, vram_used_mb=14530, vram_total_mb=24576, temp_c=71.0, power_w=240.0, max_power_w=350),
+        GpuSnapshot(index=1, vram_used_mb=22195, vram_total_mb=24576, temp_c=75.0, power_w=290.0, max_power_w=350),
     ]
     # Confirm the runner saw the right argv shape.
     args = runner.call_args.args
@@ -82,7 +82,7 @@ async def test_sample_handles_n_a_columns(tmp_path) -> None:
     fake_binary.chmod(0o755)
 
     runner = AsyncMock(
-        return_value=_proc_returning(b"0, 14530, 24576, [N/A], [N/A]\n")
+        return_value=_proc_returning(b"0, 14530, 24576, [N/A], [N/A], [N/A]\n")
     )
     adapter = NvidiaSmiTelemetry(
         binary_path=str(fake_binary), subprocess_runner=runner
@@ -93,6 +93,25 @@ async def test_sample_handles_n_a_columns(tmp_path) -> None:
     assert snap.vram_used_mb == 14530
     assert snap.temp_c is None
     assert snap.power_w is None
+    assert snap.max_power_w is None
+
+
+@pytest.mark.asyncio
+async def test_sample_parses_power_limit_when_present(tmp_path) -> None:
+    """Sprint 5b — `power.limit` column: an integer-or-float watt cap. We
+    coerce floats to int (the dashboard treats it as the GPU's effective TDP).
+    """
+    fake_binary = tmp_path / "nvidia-smi"
+    fake_binary.touch()
+    fake_binary.chmod(0o755)
+    runner = AsyncMock(
+        return_value=_proc_returning(b"0, 14530, 24576, 71, 240, 350.00\n")
+    )
+    adapter = NvidiaSmiTelemetry(
+        binary_path=str(fake_binary), subprocess_runner=runner
+    )
+    snapshots = await adapter.sample()
+    assert snapshots[0].max_power_w == 350
 
 
 @pytest.mark.parametrize(

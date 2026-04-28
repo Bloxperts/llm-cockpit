@@ -30,6 +30,9 @@ NVIDIA_SMI_QUERY = (
     "memory.total",
     "temperature.gpu",
     "power.draw",
+    # Sprint 5b: power cap (read once per sample; the cockpit treats it as
+    # the GPU's effective TDP for the watts indicator).
+    "power.limit",
 )
 NVIDIA_SMI_FORMAT = "csv,noheader,nounits"
 DEFAULT_BINARY = "nvidia-smi"
@@ -61,6 +64,14 @@ def _parse_int_field(value: str) -> int:
     return int(float(value.strip()))
 
 
+def _parse_optional_int(value: str) -> int | None:
+    """Parse a `nvidia-smi` field that may be `[N/A]` into an integer.
+    Floats are coerced via int(float(...)).
+    """
+    f = _parse_optional_float(value)
+    return int(f) if f is not None else None
+
+
 def _parse_csv_line(line: str) -> GpuSnapshot:
     parts = [p.strip() for p in line.split(",")]
     if len(parts) != len(NVIDIA_SMI_QUERY):
@@ -73,6 +84,7 @@ def _parse_csv_line(line: str) -> GpuSnapshot:
         vram_total_mb=_parse_int_field(parts[2]),
         temp_c=_parse_optional_float(parts[3]),
         power_w=_parse_optional_float(parts[4]),
+        max_power_w=_parse_optional_int(parts[5]),
     )
 
 

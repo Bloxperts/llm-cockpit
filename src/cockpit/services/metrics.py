@@ -261,6 +261,9 @@ def _serialize_gpu(snap: GpuSnapshot) -> dict[str, Any]:
         "vram_total_mb": snap.vram_total_mb,
         "temp_c": snap.temp_c,
         "power_w": snap.power_w,
+        # Sprint 5b: configured power cap, used by the dashboard's
+        # watts-vs-TDP display.
+        "max_power_w": snap.max_power_w,
     }
 
 

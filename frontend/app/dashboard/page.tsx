@@ -13,6 +13,34 @@ import {
   fmtBytes,
 } from "@/lib/dashboard-types";
 
+// Sprint 5b — RTX 3090 (Ampere GPU Boost 4.0) thresholds. These are the
+// rated values for the codebase's reference card; they're a reasonable
+// proxy for any modern NVIDIA part. If the cockpit ever needs per-SKU
+// thresholds, this constant becomes a function of the GPU model.
+const GPU_TEMP_THRESHOLDS = [
+  { max: 70, label: "Good", cls: "bg-emerald-500 text-white" },
+  { max: 82, label: "Workload", cls: "bg-sky-500 text-white" },
+  { max: 89, label: "Throttling", cls: "bg-amber-500 text-white" },
+  { max: Infinity, label: "Critical", cls: "bg-rose-600 text-white" },
+] as const;
+
+function gpuTempStatus(tempC: number | null) {
+  if (tempC === null) return null;
+  return GPU_TEMP_THRESHOLDS.find((t) => tempC <= t.max)!;
+}
+
+const DEFAULT_TDP_W = 350; // RTX 3090 factory TDP — fallback when nvidia-smi power.limit is null.
+
+function wattsColor(currentW: number | null, maxW: number | null) {
+  if (currentW === null || maxW === null || maxW <= 0) {
+    return "text-neutral-700 dark:text-neutral-300";
+  }
+  const pct = (currentW / maxW) * 100;
+  if (pct <= 70) return "text-emerald-600 dark:text-emerald-400";
+  if (pct <= 90) return "text-amber-600 dark:text-amber-400";
+  return "text-rose-600 dark:text-rose-400";
+}
+
 export default function DashboardPage() {
   const { me, loading } = useAuthStore();
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
@@ -200,24 +228,46 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function GpuStripItem({ g }: { g: { index: number; vram_used_mb: number; vram_total_mb: number; temp_c: number | null; power_w: number | null } }) {
+function GpuStripItem({
+  g,
+}: {
+  g: {
+    index: number;
+    vram_used_mb: number;
+    vram_total_mb: number;
+    temp_c: number | null;
+    power_w: number | null;
+    max_power_w: number | null;
+  };
+}) {
   const usedGb = g.vram_used_mb / 1024;
   const totalGb = g.vram_total_mb / 1024;
-  const pct = totalGb > 0 ? Math.min(100, (usedGb / totalGb) * 100) : 0;
+  const tempStatus = gpuTempStatus(g.temp_c);
+  const wattsCls = wattsColor(g.power_w, g.max_power_w ?? DEFAULT_TDP_W);
   return (
-    <div className="rounded-md border border-neutral-200 dark:border-neutral-800 px-3 py-2 text-sm bg-white dark:bg-neutral-900 min-w-[200px]">
+    <div className="rounded-md border border-neutral-200 dark:border-neutral-800 px-3 py-2 text-sm bg-white dark:bg-neutral-900 min-w-[220px]">
       <div className="font-semibold">GPU {g.index}</div>
-      <div className="text-xs text-neutral-600 dark:text-neutral-400">
-        {usedGb.toFixed(1)} / {totalGb.toFixed(1)} GB
-        {g.temp_c != null ? ` · ${Math.round(g.temp_c)}°C` : ""}
-        {g.power_w != null ? ` · ${Math.round(g.power_w)} W` : ""}
+      <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
+        {usedGb.toFixed(1)} / {totalGb.toFixed(1)} GB VRAM
       </div>
-      <div className="mt-1 h-1 rounded bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
-        <div
-          className="h-full bg-gradient-to-r from-emerald-500 to-amber-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {g.temp_c != null && tempStatus ? (
+        <div className="mt-1 flex items-center gap-2 text-xs">
+          <span className="font-mono text-neutral-700 dark:text-neutral-300">
+            {Math.round(g.temp_c)}°C
+          </span>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${tempStatus.cls}`}
+            title="RTX 3090 thresholds: ≤70 Good · 71–82 Workload · 83–89 Throttling · ≥90 Critical"
+          >
+            {tempStatus.label}
+          </span>
+        </div>
+      ) : null}
+      {g.power_w != null ? (
+        <div className={`text-xs font-mono mt-1 ${wattsCls}`}>
+          {g.power_w.toFixed(0)} W / {g.max_power_w ?? DEFAULT_TDP_W} W
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -292,6 +342,12 @@ function ModelCardView({
       <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
         tag: {m.tag ?? "—"} · {fmtBytes(m.size_bytes)} ·{" "}
         {m.actual.loaded ? "loaded" : "idle"}
+      </div>
+      {/* Sprint 5b — show the configured context window so admins see the
+          VRAM budget at a glance. Falls back to "—" when no model_config
+          row exists or num_ctx_default is null. */}
+      <div className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5 font-mono">
+        ctx {m.config?.num_ctx_default?.toLocaleString() ?? "—"}
       </div>
       {m.actual.mismatch ? (
         <div className="text-xs text-rose-600 mt-0.5">
