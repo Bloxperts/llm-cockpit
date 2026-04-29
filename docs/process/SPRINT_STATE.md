@@ -7,9 +7,9 @@
 
 ## Current sprint
 
-**Sprint 10 (planning, not yet open) — Perf-test progress UI + GPU1 placement diagnose.**
+**Sprint 10 (technical implementation complete; PR / user acceptance pending) — Perf-test progress UI + GPU1 placement diagnose.**
 
-**Window:** TBD — kicks off when Chris pastes the kickoff prompt into Claude Code.
+**Window:** 2026-04-29 — in review.
 **Target release:** `v0.4.0`.
 
 **Goal**
@@ -21,10 +21,18 @@
 
 | Item | Spec | Plan | Status |
 |---|---|---|---|
-| UC-02 v1.1 perf-test progress UI | Functional Spec Accepted (v1.1, 2026-04-29) | SSE-event refactor on the existing perf-test endpoint + cancel route + frontend drawer with live progress, cancel button, stalled banner. No new migration. | Pending |
-| BUG-GPU1 placement diagnose | n/a (LL doc deliverable) | Reproduce; inspect `actual.mismatch` + `actual.main_gpu_actual`; decide knob (Ollama best-effort / env var / process-per-GPU / code fix). | Pending |
+| UC-02 v1.1 perf-test progress UI | Functional Spec Accepted (v1.1, 2026-04-29) | SSE-event refactor on the existing perf-test endpoint + cancel route + frontend drawer with live progress, cancel button, stalled banner. No new migration. | Done (technical) — branch `feature/UC-02-v1.1-perf-test-progress`, target PR to `develop`. |
+| BUG-GPU1 placement diagnose | Draft LL-001 | Reproduce; inspect `actual.mismatch` + `actual.main_gpu_actual`; decide knob (Ollama best-effort / env var / process-per-GPU / code fix). | Done (diagnose) — Neuroforge reproduction shows `main_gpu=1` still loads `phi4:14b` onto CUDA0. Recommendation: document and accept Ollama best-effort placement for v0.4.0; no fix commit in Sprint 10. |
 
 **Out of scope:** UC-08 Slice E (first-run installer Part B reconcile — separate ticket). v2 backlog (external access, mobile/PWA).
+
+### Sprint 10 working notes
+
+- 2026-04-29: `lessons-learned/LL-001-gpu1-placement.md` added as Draft. It records code-audit evidence, upstream Ollama GPU-selection references, and the Neuroforge reproduction protocol.
+- 2026-04-29: SSH to `bloxperts@neuroforge` confirmed. Ollama is reachable at `127.0.0.1:11434` and returns model tags/empty `/api/ps`.
+- 2026-04-29: Neuroforge NVIDIA driver/userspace mismatch was fixed by reboot. Both RTX 3090 cards are visible under driver `580.142`; passwordless sudo for scoped operational checks is configured.
+- 2026-04-29: Direct Ollama reproduction sent the cockpit-equivalent hint `options.main_gpu=1` for `phi4:14b`. Ollama loaded the model on CUDA0/GPU 0 (`nvidia-smi`: GPU 0 ~10752 MiB, GPU 1 ~4 MiB; Ollama logs: `CUDA0 model buffer`, `CUDA0 KV buffer`). Conclusion recorded in LL-001: single-daemon Ollama placement is best-effort; no GPU1 fix commit in Sprint 10.
+- 2026-04-29: UC-02 v1.1 implementation completed locally: perf-test SSE events (`stage`, `progress`, `heartbeat`, `result`, `cancelled`, `error`), cancel route, frontend progress drawer, stalled warning, version bump to `0.4.0`, changelog entry, backend tests, and rebuilt bundled frontend. Full pytest passed; frontend build passed. `npm run lint` still has pre-existing React 19 lint failures outside the touched dashboard work.
 
 ---
 
@@ -226,3 +234,4 @@ Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learne
 | 2026-04-28 | UC-10 test spec | Draft → Accepted | Chris |
 | 2026-04-29 | UC-02 functional spec | Accepted v1.0 → Accepted v1.1 (perf-test progress UI amendment) | Chris |
 | 2026-04-29 | Sprint 10 | — → Planning | Chris |
+| 2026-04-29 | Sprint 10 | Planning → In review (technical implementation complete; PR pending) | Codex |

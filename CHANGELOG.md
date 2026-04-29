@@ -3,6 +3,47 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.4.0] — 2026-04-29 — Perf-test progress UI (UC-02 v1.1)
+
+Minor-version bump for the UC-02 v1.1 amendment. The dashboard perf-test
+action now behaves like a live operation instead of a silent long-running
+request: admins see stages, elapsed time, throughput progress, cancellation,
+and stalled-network detection.
+
+### Added — Backend
+
+- **Perf-test SSE protocol v1.1** on
+  `POST /api/admin/ollama/models/{model}/perf-test`:
+  - `stage` events include `{ name, started_at }`.
+  - `progress` events include `{ stage, elapsed_ms }`; throughput progress
+    also includes `tokens_so_far` and `tokens_per_sec`.
+  - `heartbeat` events emit every second while a stage is active if no other
+    event has gone out.
+  - Terminal events are now explicit: `result`, `cancelled`, or `error`.
+- **Cooperative cancellation**:
+  - `POST /api/admin/ollama/models/{model}/perf-test/cancel` flips the
+    active run's `asyncio.Event`.
+  - The harness checks cancellation between stages and while consuming
+    `chat_stream`.
+  - Cancelled runs restore prior placement, release the model lock, write
+    `admin_audit(action='model_perf_test_cancel')`, and deliberately skip
+    `model_perf` persistence.
+
+### Added — Frontend
+
+- Replaced the raw perf-test log modal on `/dashboard` with a progress drawer:
+  stage badge, elapsed timer, live tokens/s during throughput, Cancel button,
+  terminal result card, and cancelled/error states.
+- The drawer shows a stalled warning when no SSE event arrives for 2 seconds,
+  while keeping Cancel available.
+- The bundled static frontend was rebuilt into `src/cockpit/frontend_dist/`.
+
+### Tests
+
+- UC-02 backend tests now cover the v1.1 result shape, progress events,
+  heartbeat helper, cancel route, cancelled terminal event, audit row, and
+  the no-`model_perf` guarantee for cancelled runs.
+
 ## [v0.3.1] — 2026-04-28 — Admin Ollama configuration page (UC-10)
 
 Patch on top of v0.3.0. UC-10 ships the `/admin/ollama` admin surface:

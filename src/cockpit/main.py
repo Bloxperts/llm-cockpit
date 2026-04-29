@@ -219,6 +219,7 @@ def create_app(
     app.state.model_state = ModelStateSamplerState()
     app.state.model_locks = defaultdict(asyncio.Lock)  # per-model single-flight
     app.state.host_perf_lock = asyncio.Lock()  # one perf-test at a time across models
+    app.state.perf_test_runs = {}  # model -> active cooperative-cancel state
     app.state.chat_factory = chat_fac
     app.state.telemetry_factory = tel_fac
 

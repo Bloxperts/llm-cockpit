@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
 import { DashboardHistory } from "@/components/DashboardHistory";
@@ -15,6 +15,27 @@ import {
 } from "@/lib/dashboard-types";
 
 type DashboardTab = "live" | "history";
+type PerfStatus = "idle" | "running" | "result" | "cancelled" | "error";
+
+type PerfResult = {
+  cold_load_seconds?: number | null;
+  throughput_tps?: number | null;
+  max_ctx_observed?: number | null;
+  gpu_layout_diff?: Record<string, number>;
+};
+
+type PerfRunState = {
+  model: string;
+  status: PerfStatus;
+  stage: string;
+  elapsedMs: number;
+  tokensSoFar: number | null;
+  tokensPerSec: number | null;
+  lastEventAt: number;
+  result: PerfResult | null;
+  error: string | null;
+  cancelling: boolean;
+};
 
 // Sprint 5b — RTX 3090 (Ampere GPU Boost 4.0) thresholds. These are the
 // rated values for the codebase's reference card; they're a reasonable
@@ -48,8 +69,8 @@ export default function DashboardPage() {
   const { me, loading } = useAuthStore();
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [busyModel, setBusyModel] = useState<string | null>(null);
-  const [perfModel, setPerfModel] = useState<string | null>(null);
-  const [perfLog, setPerfLog] = useState<string[]>([]);
+  const [perfRun, setPerfRun] = useState<PerfRunState | null>(null);
+  const [perfTick, setPerfTick] = useState(Date.now());
   // UC-03 — top-level Live / History tab. The Live SSE stream still
   // runs in the background regardless of which tab is shown so
   // switching back to Live is instant.
@@ -96,6 +117,11 @@ export default function DashboardPage() {
     };
   }, [me, loading]);
 
+  useEffect(() => {
+    const id = window.setInterval(() => setPerfTick(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, []);
+
   async function onPlacementChange(model: string, placement: string) {
     setBusyModel(model);
     try {
@@ -131,18 +157,124 @@ export default function DashboardPage() {
   }
 
   async function onPerfTest(model: string) {
-    setPerfModel(model);
-    setPerfLog([]);
+    const started = Date.now();
+    setPerfRun({
+      model,
+      status: "running",
+      stage: "starting",
+      elapsedMs: 0,
+      tokensSoFar: null,
+      tokensPerSec: null,
+      lastEventAt: started,
+      result: null,
+      error: null,
+      cancelling: false,
+    });
     try {
       for await (const ev of streamSse(
         `/api/admin/ollama/models/${encodeURIComponent(model)}/perf-test`,
         { method: "POST", body: JSON.stringify({}) },
       )) {
-        setPerfLog((prev) => [...prev, `[${ev.event}] ${ev.data}`]);
+        const receivedAt = Date.now();
+        let data: Record<string, unknown> = {};
+        try {
+          data = ev.data ? JSON.parse(ev.data) : {};
+        } catch {
+          data = {};
+        }
+        setPerfRun((prev) => {
+          if (!prev || prev.model !== model) return prev;
+          if (ev.event === "stage") {
+            return {
+              ...prev,
+              status: "running",
+              stage: String(data.name ?? prev.stage),
+              elapsedMs: 0,
+              lastEventAt: receivedAt,
+            };
+          }
+          if (ev.event === "progress" || ev.event === "heartbeat") {
+            return {
+              ...prev,
+              status: "running",
+              stage: String(data.stage ?? prev.stage),
+              elapsedMs: Number(data.elapsed_ms ?? prev.elapsedMs),
+              tokensSoFar:
+                data.tokens_so_far === undefined ? prev.tokensSoFar : Number(data.tokens_so_far),
+              tokensPerSec:
+                data.tokens_per_sec === undefined ? prev.tokensPerSec : Number(data.tokens_per_sec),
+              lastEventAt: receivedAt,
+            };
+          }
+          if (ev.event === "result") {
+            return {
+              ...prev,
+              status: "result",
+              stage: "complete",
+              result: data as PerfResult,
+              lastEventAt: receivedAt,
+              cancelling: false,
+            };
+          }
+          if (ev.event === "cancelled") {
+            return {
+              ...prev,
+              status: "cancelled",
+              stage: "idle",
+              elapsedMs: Number(data.elapsed_ms ?? prev.elapsedMs),
+              result: null,
+              lastEventAt: receivedAt,
+              cancelling: false,
+            };
+          }
+          if (ev.event === "error") {
+            return {
+              ...prev,
+              status: "error",
+              stage: String(data.stage ?? prev.stage),
+              error: String(data.message ?? "Perf test failed"),
+              lastEventAt: receivedAt,
+              cancelling: false,
+            };
+          }
+          return { ...prev, lastEventAt: receivedAt };
+        });
       }
     } catch (e) {
       if (e instanceof ApiError) {
-        setPerfLog((prev) => [...prev, `error HTTP ${e.status}`]);
+        setPerfRun((prev) =>
+          prev && prev.model === model
+            ? {
+                ...prev,
+                status: "error",
+                error: `HTTP ${e.status}`,
+                cancelling: false,
+                lastEventAt: Date.now(),
+              }
+            : prev,
+        );
+      }
+    }
+  }
+
+  async function onCancelPerfTest(model: string) {
+    setPerfRun((prev) => (prev ? { ...prev, cancelling: true } : prev));
+    try {
+      await api(`/api/admin/ollama/models/${encodeURIComponent(model)}/perf-test/cancel`, {
+        method: "POST",
+      });
+    } catch (e) {
+      if (e instanceof ApiError) {
+        setPerfRun((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "error",
+                error: `Cancel failed: HTTP ${e.status}`,
+                cancelling: false,
+              }
+            : prev,
+        );
       }
     }
   }
@@ -235,14 +367,13 @@ export default function DashboardPage() {
         )}
       </main>
 
-      {perfModel ? (
-        <PerfDialog
-          model={perfModel}
-          log={perfLog}
-          onClose={() => {
-            setPerfModel(null);
-            setPerfLog([]);
-          }}
+      {perfRun ? (
+        <PerfDrawer
+          run={perfRun}
+          now={perfTick}
+          onCancel={() => onCancelPerfTest(perfRun.model)}
+          onClose={() => setPerfRun(null)}
+          onRunAgain={() => onPerfTest(perfRun.model)}
         />
       ) : null}
     </>
@@ -398,7 +529,7 @@ function ModelCardView({
         </div>
       ) : (
         <div className="text-xs text-neutral-500 italic mt-1">
-          no perf data — run "Test performance"
+          no perf data — run Test performance
         </div>
       )}
       {isAdmin ? (
@@ -437,24 +568,51 @@ function ModelCardView({
   );
 }
 
-function PerfDialog({
-  model,
-  log,
+const PERF_STAGE_LABELS: Record<string, string> = {
+  starting: "Starting",
+  lock: "Waiting for lock",
+  unload: "Unload",
+  cold_load: "Cold load",
+  throughput: "Throughput run",
+  context_probe: "Context probe",
+  persist: "Persist",
+  restore: "Restore",
+  complete: "Complete",
+  idle: "Idle",
+};
+
+function fmtElapsed(ms: number) {
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function PerfDrawer({
+  run,
+  now,
+  onCancel,
   onClose,
+  onRunAgain,
 }: {
-  model: string;
-  log: string[];
+  run: PerfRunState;
+  now: number;
+  onCancel: () => void;
   onClose: () => void;
+  onRunAgain: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [log]);
+  const running = run.status === "running";
+  const secondsSinceEvent = Math.max(0, (now - run.lastEventAt) / 1000);
+  const stalled = running && secondsSinceEvent >= 2;
+  const stageLabel = PERF_STAGE_LABELS[run.stage] ?? run.stage.replace(/_/g, " ");
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-      <div className="rounded-lg bg-white dark:bg-neutral-900 max-w-2xl w-full p-4 shadow-lg space-y-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">Performance test</h2>
+    <div className="fixed inset-0 z-50 bg-black/40 flex justify-end">
+      <aside className="h-full w-full max-w-xl bg-white dark:bg-neutral-950 shadow-2xl border-l border-neutral-200 dark:border-neutral-800 p-5 overflow-y-auto">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">Performance test</h2>
+            <p className="text-sm text-neutral-600 dark:text-neutral-400 break-all mt-1">
+              {run.model}
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -463,14 +621,126 @@ function PerfDialog({
             Close
           </button>
         </div>
-        <p className="text-sm text-neutral-600 dark:text-neutral-400">Model: {model}</p>
-        <div
-          ref={ref}
-          className="font-mono text-xs h-64 overflow-y-auto rounded bg-neutral-100 dark:bg-neutral-950 p-2 whitespace-pre-wrap"
-        >
-          {log.length === 0 ? <em className="text-neutral-500">Connecting…</em> : log.join("\n")}
+
+        <div className="mt-5 rounded-md border border-neutral-200 dark:border-neutral-800 p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <span
+              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold uppercase ${
+                run.status === "error"
+                  ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+                  : run.status === "cancelled"
+                    ? "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                    : run.status === "result"
+                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                      : "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200"
+              }`}
+            >
+              {stageLabel}
+            </span>
+            <span className="font-mono text-sm text-neutral-700 dark:text-neutral-300">
+              {fmtElapsed(run.elapsedMs)}
+            </span>
+          </div>
+
+          {run.tokensPerSec !== null ? (
+            <div className="grid grid-cols-2 gap-3">
+              <MetricTile
+                label="Tokens so far"
+                value={run.tokensSoFar === null ? "—" : run.tokensSoFar.toLocaleString()}
+              />
+              <MetricTile label="Live tokens/s" value={run.tokensPerSec.toFixed(1)} />
+            </div>
+          ) : (
+            <p className="text-sm text-neutral-500">
+              Throughput appears here once the throughput run starts.
+            </p>
+          )}
+
+          {stalled ? (
+            <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 text-sm text-amber-900 dark:text-amber-100">
+              Stalled — last event {secondsSinceEvent.toFixed(1)}s ago, last phase:{" "}
+              {stageLabel}
+            </div>
+          ) : null}
+
+          {run.status === "error" ? (
+            <div className="rounded-md border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 p-3 text-sm text-rose-900 dark:text-rose-100">
+              {run.error}
+            </div>
+          ) : null}
+
+          {run.status === "cancelled" ? (
+            <div className="rounded-md border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 p-3 text-sm text-neutral-700 dark:text-neutral-300">
+              Cancelled. The drawer is idle and no partial metrics were saved.
+            </div>
+          ) : null}
+
+          {run.status === "result" && run.result ? (
+            <div className="rounded-md border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 p-3 space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <MetricTile
+                  label="Cold load"
+                  value={
+                    run.result.cold_load_seconds == null
+                      ? "—"
+                      : `${run.result.cold_load_seconds.toFixed(1)} s`
+                  }
+                />
+                <MetricTile
+                  label="Throughput"
+                  value={
+                    run.result.throughput_tps == null
+                      ? "—"
+                      : `${run.result.throughput_tps.toFixed(1)} tps`
+                  }
+                />
+                <MetricTile
+                  label="Max ctx"
+                  value={run.result.max_ctx_observed?.toLocaleString() ?? "—"}
+                />
+              </div>
+              <div>
+                <div className="text-xs font-semibold uppercase text-neutral-500 mb-1">
+                  GPU layout diff
+                </div>
+                <pre className="text-xs font-mono rounded bg-white/70 dark:bg-neutral-950/70 p-2 overflow-x-auto">
+                  {JSON.stringify(run.result.gpu_layout_diff ?? {}, null, 2)}
+                </pre>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2">
+            {running ? (
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={run.cancelling}
+                className="rounded-md border border-rose-300 dark:border-rose-800 px-3 py-1.5 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950 disabled:opacity-60"
+              >
+                {run.cancelling ? "Cancelling…" : "Cancel"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onRunAgain}
+                className="rounded-md border border-neutral-300 dark:border-neutral-700 px-3 py-1.5 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              >
+                Run again
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      </aside>
+    </div>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-2">
+      <div className="text-[11px] uppercase font-semibold text-neutral-500">{label}</div>
+      <div className="font-mono text-sm mt-1">{value}</div>
     </div>
   );
 }
