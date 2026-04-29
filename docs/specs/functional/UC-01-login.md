@@ -1,9 +1,7 @@
-<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-28 -->
+<!-- Status: Accepted | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-27 -->
 # UC-01 · Functional Spec — User login
 
-**Status:** Done (technical)
-<!-- VAULT-SYNC: implementation landed in feature/sprint2-mvp. Spec data-model fragment showing role IN ('admin','user') is stale (predates ADR-004's chat<code<admin ladder) — implementation follows ADR-004 / models.py. Status flipped Accepted → In Progress → Done (technical). Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off. -->
-
+**Status:** Accepted
 **Owner:** Chris
 **Depends on:** none.
 **User Spec:** [`../../use-cases/UC-01-login.md`](../../use-cases/UC-01-login.md)

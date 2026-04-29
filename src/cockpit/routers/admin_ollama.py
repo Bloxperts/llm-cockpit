@@ -18,16 +18,17 @@ import logging
 import statistics
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
-import yaml
-
-from cockpit.deps import get_chat_factory, get_session, get_settings, get_telemetry_factory
+from cockpit.deps import get_chat_factory, get_session, get_telemetry_factory
 from cockpit.models import (
     Message,
     ModelConfig,
@@ -82,6 +83,23 @@ THROUGHPUT_RUNS = 3
 
 # Default context-probe ladder per the spec.
 DEFAULT_CONTEXTS = [4096, 16384, 32768, 65536]
+PERF_HEARTBEAT_INTERVAL_S = 1.0
+
+
+class _PerfCancelled(Exception):
+    """Internal control-flow signal for cooperative perf-test cancellation."""
+
+
+@dataclass
+class _PerfRunState:
+    model: str
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    stage: str = "starting"
+    started_at: float = field(default_factory=time.monotonic)
+    last_event_at: float = field(default_factory=time.monotonic)
+
+    def elapsed_ms(self) -> int:
+        return int((time.monotonic() - self.started_at) * 1000)
 
 
 # --- Placement helpers ----------------------------------------------------
@@ -160,9 +178,7 @@ class _AdapterScope:
 # --- Placement endpoint ---------------------------------------------------
 
 
-async def _warm_up(
-    chat: LLMChat, model: str, options: dict[str, Any]
-) -> None:
+async def _warm_up(chat: LLMChat, model: str, options: dict[str, Any]) -> None:
     """Trigger the load with the right options. Discard output."""
     try:
         async for _chunk in chat.chat_stream(
@@ -205,9 +221,7 @@ async def _wait_unloaded(chat: LLMChat, model: str, *, timeout_s: float) -> bool
     return False
 
 
-def _detect_main_gpu_actual(
-    before: list[GpuSnapshot] | None, after: list[GpuSnapshot] | None
-) -> int | None:
+def _detect_main_gpu_actual(before: list[GpuSnapshot] | None, after: list[GpuSnapshot] | None) -> int | None:
     """Compare pre/post snapshots — return the GPU index whose VRAM grew the
     most. Returns None if telemetry was unavailable or growth is ambiguous.
     """
@@ -297,13 +311,9 @@ async def place_model(
                         raise HTTPException(503, detail={"detail": "ollama_unreachable", "cause": str(exc)})
 
                     if should_be_loaded:
-                        loaded_now = await _wait_loaded(
-                            chat, model, timeout_s=LOADED_CONFIRMATION_TIMEOUT_S
-                        )
+                        loaded_now = await _wait_loaded(chat, model, timeout_s=LOADED_CONFIRMATION_TIMEOUT_S)
                     else:
-                        unloaded = await _wait_unloaded(
-                            chat, model, timeout_s=LOADED_CONFIRMATION_TIMEOUT_S
-                        )
+                        unloaded = await _wait_unloaded(chat, model, timeout_s=LOADED_CONFIRMATION_TIMEOUT_S)
                         loaded_now = not unloaded
 
                     after: list[GpuSnapshot] | None = None
@@ -530,7 +540,12 @@ async def _measure_throughput(chat: LLMChat, model: str) -> float | None:
     ):
         if chunk.done:
             final = chunk
-    if final is None or final.usage_out is None or final.eval_duration_ns is None or final.eval_duration_ns == 0:
+    if (
+        final is None
+        or final.usage_out is None
+        or final.eval_duration_ns is None
+        or final.eval_duration_ns == 0
+    ):
         return None
     return final.usage_out / (final.eval_duration_ns / 1e9)
 
@@ -563,16 +578,11 @@ async def _probe_max_context(chat: LLMChat, model: str, contexts: list[int]) -> 
     return None
 
 
-def _gpu_layout_diff(
-    before: list[GpuSnapshot] | None, after: list[GpuSnapshot] | None
-) -> dict[str, int]:
+def _gpu_layout_diff(before: list[GpuSnapshot] | None, after: list[GpuSnapshot] | None) -> dict[str, int]:
     if not before or not after:
         return {}
     before_by_idx = {s.index: s.vram_used_mb for s in before}
-    return {
-        f"gpu{s.index}_vram_growth_mb": s.vram_used_mb - before_by_idx.get(s.index, 0)
-        for s in after
-    }
+    return {f"gpu{s.index}_vram_growth_mb": s.vram_used_mb - before_by_idx.get(s.index, 0) for s in after}
 
 
 def _save_model_perf(
@@ -599,10 +609,7 @@ def _save_model_perf(
 def _last_perf_row(session: Session, model: str) -> dict[str, Any] | None:
     row = (
         session.execute(
-            select(ModelPerf)
-            .where(ModelPerf.model == model)
-            .order_by(ModelPerf.measured_at.desc())
-            .limit(1)
+            select(ModelPerf).where(ModelPerf.model == model).order_by(ModelPerf.measured_at.desc()).limit(1)
         )
         .scalars()
         .first()
@@ -616,7 +623,261 @@ def _last_perf_row(session: Session, model: str) -> dict[str, Any] | None:
         "cold_load_seconds": row.cold_load_seconds,
         "throughput_tps": row.throughput_tps,
         "max_ctx_observed": row.max_ctx_observed,
+        "gpu_layout_diff": json.loads(row.gpu_layout_json) if row.gpu_layout_json else {},
     }
+
+
+def _sse(event: str, payload: dict[str, Any]) -> dict[str, str]:
+    return {"event": event, "data": json.dumps(payload, default=str)}
+
+
+def _stage_payload(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "started_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _progress_payload(
+    state: _PerfRunState,
+    *,
+    tokens_so_far: int | None = None,
+    tokens_per_sec: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "stage": state.stage,
+        "elapsed_ms": state.elapsed_ms(),
+    }
+    if tokens_so_far is not None:
+        payload["tokens_so_far"] = tokens_so_far
+    if tokens_per_sec is not None:
+        payload["tokens_per_sec"] = tokens_per_sec
+    return payload
+
+
+async def _emit_stage(state: _PerfRunState, name: str) -> AsyncIterator[dict[str, str]]:
+    state.stage = name
+    state.last_event_at = time.monotonic()
+    yield _sse("stage", _stage_payload(name))
+    state.last_event_at = time.monotonic()
+    yield _sse("progress", _progress_payload(state))
+
+
+async def _await_with_heartbeat(
+    awaitable,
+    state: _PerfRunState,
+    result: dict[str, Any] | None = None,
+    result_key: str = "value",
+) -> AsyncIterator[dict[str, str]]:
+    task = asyncio.create_task(awaitable)
+    try:
+        while True:
+            if state.cancel_event.is_set():
+                task.cancel()
+                raise _PerfCancelled
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=PERF_HEARTBEAT_INTERVAL_S)
+                if task.exception() is not None:
+                    raise task.exception()  # type: ignore[misc]
+                if result is not None:
+                    result[result_key] = task.result()
+                return
+            except TimeoutError:
+                now = time.monotonic()
+                if now - state.last_event_at >= PERF_HEARTBEAT_INTERVAL_S:
+                    state.last_event_at = now
+                    yield _sse("heartbeat", _progress_payload(state))
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def _acquire_lock_with_events(
+    lock: asyncio.Lock,
+    state: _PerfRunState,
+) -> AsyncIterator[dict[str, str]]:
+    async for event in _await_with_heartbeat(lock.acquire(), state):
+        yield event
+
+
+async def _drop_model_with_events(
+    chat: LLMChat,
+    model: str,
+    state: _PerfRunState,
+) -> AsyncIterator[dict[str, str]]:
+    async for event in _await_with_heartbeat(_drop_model(chat, model), state):
+        yield event
+
+
+async def _wait_unloaded_with_events(
+    chat: LLMChat,
+    model: str,
+    state: _PerfRunState,
+    *,
+    timeout_s: float,
+) -> AsyncIterator[dict[str, str]]:
+    async for event in _await_with_heartbeat(_wait_unloaded(chat, model, timeout_s=timeout_s), state):
+        yield event
+
+
+async def _telemetry_sample_with_events(
+    telemetry: Telemetry,
+    state: _PerfRunState,
+    result: dict[str, Any],
+    result_key: str,
+) -> AsyncIterator[dict[str, str]]:
+    async for event in _await_with_heartbeat(telemetry.sample(), state, result, result_key):
+        yield event
+
+
+async def _restore_prior_placement(
+    chat: LLMChat,
+    model: str,
+    prior_placement: str | None,
+    state: _PerfRunState,
+) -> AsyncIterator[dict[str, str]]:
+    if prior_placement is not None and _placement_should_be_loaded(prior_placement):
+        async for event in _await_with_heartbeat(
+            _warm_up(chat, model, _options_for_placement(prior_placement)), state
+        ):
+            yield event
+    elif prior_placement is not None and not _placement_should_be_loaded(prior_placement):
+        async for event in _await_with_heartbeat(_drop_model(chat, model), state):
+            yield event
+
+
+async def _cold_load_with_events(
+    chat: LLMChat,
+    model: str,
+    state: _PerfRunState,
+    result: dict[str, Any],
+    result_key: str,
+) -> AsyncIterator[dict[str, str]]:
+    first_byte_t: float | None = None
+    stream = chat.chat_stream(
+        model=model,
+        messages=[{"role": "user", "content": "Reply with: ok"}],
+        options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+    )
+    agen = stream.__aiter__()
+    next_task: asyncio.Task | None = None
+    while first_byte_t is None:
+        if state.cancel_event.is_set():
+            aclose = getattr(agen, "aclose", None)
+            if aclose is not None:
+                await aclose()
+            raise _PerfCancelled
+        if next_task is None:
+            next_task = asyncio.create_task(agen.__anext__())
+        try:
+            try:
+                await asyncio.wait_for(asyncio.shield(next_task), timeout=PERF_HEARTBEAT_INTERVAL_S)
+                first_byte_t = time.monotonic()
+            except TimeoutError:
+                now = time.monotonic()
+                if now - state.last_event_at >= PERF_HEARTBEAT_INTERVAL_S:
+                    state.last_event_at = now
+                    yield _sse("heartbeat", _progress_payload(state))
+        except StopAsyncIteration:
+            break
+        finally:
+            if next_task is not None and not next_task.done() and state.cancel_event.is_set():
+                next_task.cancel()
+        if next_task is not None and next_task.done():
+            next_task = None
+    result[result_key] = first_byte_t
+
+
+async def _measure_throughput_with_events(
+    chat: LLMChat,
+    model: str,
+    state: _PerfRunState,
+    result: dict[str, Any],
+    result_key: str,
+) -> AsyncIterator[dict[str, str]]:
+    final = None
+    tokens_so_far = 0
+    run_started_at = time.monotonic()
+    stream = chat.chat_stream(
+        model=model,
+        messages=[{"role": "user", "content": "Count to ten."}],
+        options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+    )
+    agen = stream.__aiter__()
+    next_task: asyncio.Task | None = None
+    while True:
+        if state.cancel_event.is_set():
+            aclose = getattr(agen, "aclose", None)
+            if aclose is not None:
+                await aclose()
+            raise _PerfCancelled
+        if next_task is None:
+            next_task = asyncio.create_task(agen.__anext__())
+        try:
+            try:
+                chunk = await asyncio.wait_for(asyncio.shield(next_task), timeout=PERF_HEARTBEAT_INTERVAL_S)
+            except TimeoutError:
+                now = time.monotonic()
+                if now - state.last_event_at >= PERF_HEARTBEAT_INTERVAL_S:
+                    state.last_event_at = now
+                    yield _sse(
+                        "heartbeat",
+                        _progress_payload(
+                            state,
+                            tokens_so_far=tokens_so_far,
+                            tokens_per_sec=(tokens_so_far / max(now - run_started_at, 0.001)),
+                        ),
+                    )
+                continue
+        except StopAsyncIteration:
+            break
+        finally:
+            if next_task is not None and not next_task.done() and state.cancel_event.is_set():
+                next_task.cancel()
+        if next_task is not None and next_task.done():
+            next_task = None
+        if chunk.done:
+            final = chunk
+            if chunk.usage_out is not None:
+                tokens_so_far += chunk.usage_out
+        else:
+            tokens_so_far += 1
+        now = time.monotonic()
+        if now - state.last_event_at >= PERF_HEARTBEAT_INTERVAL_S or chunk.done:
+            state.last_event_at = now
+            yield _sse(
+                "progress",
+                _progress_payload(
+                    state,
+                    tokens_so_far=tokens_so_far,
+                    tokens_per_sec=tokens_so_far / max(now - run_started_at, 0.001),
+                ),
+            )
+        if chunk.done:
+            break
+    if (
+        final is None
+        or final.usage_out is None
+        or final.eval_duration_ns is None
+        or final.eval_duration_ns == 0
+    ):
+        result[result_key] = None
+    else:
+        result[result_key] = final.usage_out / (final.eval_duration_ns / 1e9)
+
+
+async def _probe_max_context_with_events(
+    chat: LLMChat,
+    model: str,
+    contexts: list[int],
+    state: _PerfRunState,
+    result: dict[str, Any],
+    result_key: str,
+) -> AsyncIterator[dict[str, str]]:
+    async for event in _await_with_heartbeat(
+        _probe_max_context(chat, model, contexts), state, result, result_key
+    ):
+        yield event
 
 
 @router.post(
@@ -642,8 +903,13 @@ async def perf_test(
     session_factory = request.app.state.session_factory
     model_locks = request.app.state.model_locks
     host_perf_lock = request.app.state.host_perf_lock
+    active_runs: dict[str, _PerfRunState] = request.app.state.perf_test_runs
     actor_id = user.id
     source_ip = request.client.host if request.client else None
+    if model in active_runs:
+        raise HTTPException(409, detail="perf_test_already_running")
+    run_state = _PerfRunState(model=model)
+    active_runs[model] = run_state
 
     async def gen() -> AsyncIterator[dict]:
         # Record the prior placement so we can restore at the end.
@@ -651,82 +917,83 @@ async def perf_test(
             cfg = s.query(ModelConfig).filter_by(model=model).first()
             prior_placement = cfg.placement if cfg is not None else None
 
-        async with host_perf_lock:
-            yield {"event": "stage", "data": json.dumps({"name": "lock"})}
-            async with model_locks[model]:
+        try:
+            host_lock_acquired = False
+            model_lock_acquired = False
+            try:
+                async for event in _emit_stage(run_state, "lock"):
+                    yield event
+                async for event in _acquire_lock_with_events(host_perf_lock, run_state):
+                    yield event
+                host_lock_acquired = True
+                async for event in _acquire_lock_with_events(model_locks[model], run_state):
+                    yield event
+                model_lock_acquired = True
                 async with _AdapterScope(lambda: chat_factory(settings.ollama_url)) as chat:
                     async with _AdapterScope(telemetry_factory) as telemetry:
                         # Stage: unload (best effort).
-                        yield {"event": "stage", "data": json.dumps({"name": "unload"})}
-                        await _drop_model(chat, model)
-                        await _wait_unloaded(chat, model, timeout_s=15.0)
+                        async for event in _emit_stage(run_state, "unload"):
+                            yield event
+                        async for event in _drop_model_with_events(chat, model, run_state):
+                            yield event
+                        async for event in _wait_unloaded_with_events(chat, model, run_state, timeout_s=15.0):
+                            yield event
 
                         # Stage: cold_load.
-                        yield {"event": "stage", "data": json.dumps({"name": "cold_load"})}
+                        async for event in _emit_stage(run_state, "cold_load"):
+                            yield event
+                        samples: dict[str, Any] = {"before": None, "after": None}
                         try:
-                            before = await telemetry.sample()
-                        except Exception:
-                            before = None
-                        t0 = time.monotonic()
-                        first_byte_t: float | None = None
-                        try:
-                            async for _chunk in chat.chat_stream(
-                                model=model,
-                                messages=[{"role": "user", "content": "Reply with: ok"}],
-                                options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+                            async for event in _telemetry_sample_with_events(
+                                telemetry, run_state, samples, "before"
                             ):
-                                first_byte_t = time.monotonic()
-                                break
-                        except OllamaModelNotFound:
-                            yield {
-                                "event": "error",
-                                "data": json.dumps({"detail": "model_not_found"}),
-                            }
-                            return
-                        except OllamaUnreachableError as exc:
-                            yield {
-                                "event": "error",
-                                "data": json.dumps(
-                                    {"detail": "ollama_unreachable", "cause": str(exc)}
-                                ),
-                            }
-                            return
-                        except OllamaResponseError as exc:
-                            # HTTP 400 "does not support chat" — embedding-only model.
-                            yield {
-                                "event": "error",
-                                "data": json.dumps(
-                                    {"detail": "model_not_supported", "cause": str(exc)}
-                                ),
-                            }
-                            return
-                        cold_load_seconds = (
-                            (first_byte_t - t0) if first_byte_t is not None else None
-                        )
-                        try:
-                            after = await telemetry.sample()
+                                yield event
                         except Exception:
-                            after = None
-                        gpu_layout = _gpu_layout_diff(before, after)
+                            samples["before"] = None
+                        t0 = time.monotonic()
+                        cold_result: dict[str, Any] = {"first_byte": None}
+                        async for event in _cold_load_with_events(
+                            chat, model, run_state, cold_result, "first_byte"
+                        ):
+                            yield event
+                        first_byte_t = cold_result["first_byte"]
+                        cold_load_seconds = (first_byte_t - t0) if first_byte_t is not None else None
+                        try:
+                            async for event in _telemetry_sample_with_events(
+                                telemetry, run_state, samples, "after"
+                            ):
+                                yield event
+                        except Exception:
+                            samples["after"] = None
+                        gpu_layout = _gpu_layout_diff(samples["before"], samples["after"])
 
                         # Stage: throughput.
-                        yield {"event": "stage", "data": json.dumps({"name": "throughput"})}
+                        async for event in _emit_stage(run_state, "throughput"):
+                            yield event
                         tps_runs: list[float] = []
                         for _ in range(THROUGHPUT_RUNS):
-                            tps = await _measure_throughput(chat, model)
-                            if tps is not None:
-                                tps_runs.append(tps)
+                            tps_result: dict[str, Any] = {"tps": None}
+                            async for event in _measure_throughput_with_events(
+                                chat, model, run_state, tps_result, "tps"
+                            ):
+                                yield event
+                            if tps_result["tps"] is not None:
+                                tps_runs.append(tps_result["tps"])
                         mean_tps = statistics.mean(tps_runs) if tps_runs else None
 
                         # Stage: context probe.
-                        yield {
-                            "event": "stage",
-                            "data": json.dumps({"name": "context_probe"}),
-                        }
-                        max_ctx = await _probe_max_context(chat, model, contexts)
+                        async for event in _emit_stage(run_state, "context_probe"):
+                            yield event
+                        ctx_result: dict[str, Any] = {"max_ctx": None}
+                        async for event in _probe_max_context_with_events(
+                            chat, model, contexts, run_state, ctx_result, "max_ctx"
+                        ):
+                            yield event
+                        max_ctx = ctx_result["max_ctx"]
 
                         # Stage: persist.
-                        yield {"event": "stage", "data": json.dumps({"name": "persist"})}
+                        async for event in _emit_stage(run_state, "persist"):
+                            yield event
                         with session_factory() as s:
                             row = _save_model_perf(
                                 s,
@@ -750,27 +1017,82 @@ async def perf_test(
                                 source_ip=source_ip,
                             )
                             s.commit()
-                            result = _last_perf_row(s, model)
-                        yield {"event": "result", "data": json.dumps(result, default=str)}
 
-                        # Stage: restore.
-                        yield {"event": "stage", "data": json.dumps({"name": "restore"})}
-                        if prior_placement is not None and _placement_should_be_loaded(
-                            prior_placement
-                        ):
-                            await _warm_up(
-                                chat, model, _options_for_placement(prior_placement)
-                            )
-                        elif prior_placement is not None and not _placement_should_be_loaded(
-                            prior_placement
-                        ):
-                            await _drop_model(chat, model)
-                        # else: no prior config — leave loaded as is (the cold_load
-                        # warm is at keep_alive=24h, so it stays warm by default).
+                        # Stage: restore before terminal result.
+                        async for event in _emit_stage(run_state, "restore"):
+                            yield event
+                        async for event in _restore_prior_placement(chat, model, prior_placement, run_state):
+                            yield event
+                        with session_factory() as s:
+                            result = _last_perf_row(s, model)
+                        yield _sse("result", result or {})
+            finally:
+                if model_lock_acquired:
+                    model_locks[model].release()
+                if host_lock_acquired:
+                    host_perf_lock.release()
+        except _PerfCancelled:
+            async with _AdapterScope(lambda: chat_factory(settings.ollama_url)) as chat:
+                try:
+                    async for event in _restore_prior_placement(chat, model, prior_placement, run_state):
+                        yield event
+                except Exception:
+                    log.exception("Perf-test restore after cancel failed for %s", model)
+            with session_factory() as s:
+                write_admin_audit(
+                    s,
+                    actor_id=actor_id,
+                    action="model_perf_test_cancel",
+                    target_model=model,
+                    details={
+                        "stage_at_cancel": run_state.stage,
+                        "elapsed_ms": run_state.elapsed_ms(),
+                    },
+                    source_ip=source_ip,
+                )
+                s.commit()
+            yield _sse(
+                "cancelled",
+                {
+                    "stage_at_cancel": run_state.stage,
+                    "elapsed_ms": run_state.elapsed_ms(),
+                },
+            )
+        except OllamaModelNotFound:
+            yield _sse("error", {"stage": run_state.stage, "message": "model_not_found"})
+        except OllamaUnreachableError as exc:
+            yield _sse(
+                "error",
+                {"stage": run_state.stage, "message": f"ollama_unreachable: {exc}"},
+            )
+        except OllamaResponseError as exc:
+            yield _sse(
+                "error",
+                {"stage": run_state.stage, "message": f"model_not_supported: {exc}"},
+            )
+        except Exception as exc:
+            log.exception("Perf test failed for %s", model)
+            yield _sse("error", {"stage": run_state.stage, "message": str(exc)})
+        finally:
+            active_runs.pop(model, None)
 
     return EventSourceResponse(gen())
 
 
+@router.post(
+    "/models/{model}/perf-test/cancel",
+    summary="Cancel an active model performance test (admin).",
+)
+async def cancel_perf_test(
+    model: str,
+    request: Request,
+    user: User = Depends(require_role("admin")),
+) -> dict[str, bool]:
+    run_state: _PerfRunState | None = request.app.state.perf_test_runs.get(model)
+    if run_state is None:
+        return {"cancelled": False}
+    run_state.cancel_event.set()
+    return {"cancelled": True}
 
 
 # =========================================================================
@@ -815,9 +1137,7 @@ def patch_model_tag(
                 "allowed": sorted(_VALID_TAGS),
             },
         )
-    existing = db.execute(
-        select(ModelTag).where(ModelTag.model == model)
-    ).scalar_one_or_none()
+    existing = db.execute(select(ModelTag).where(ModelTag.model == model)).scalar_one_or_none()
     if existing is None:
         db.add(ModelTag(model=model, tag=body.tag, source="override"))
     else:
@@ -851,9 +1171,7 @@ def delete_model_tag(
     list, immediately re-apply the heuristic so the row gets back an
     `auto` tag — otherwise leave it absent (the next `ModelStateSampler`
     tick will re-insert it)."""
-    existing = db.execute(
-        select(ModelTag).where(ModelTag.model == model)
-    ).scalar_one_or_none()
+    existing = db.execute(select(ModelTag).where(ModelTag.model == model)).scalar_one_or_none()
     if existing is None or existing.source != "override":
         # Idempotent — no-op + no audit row when there's nothing to clear.
         return Response(status_code=204)

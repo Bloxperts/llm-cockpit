@@ -1,9 +1,7 @@
-<!-- Status: Done (technical) | Version: 0.1 | Created: 2026-04-27 | Updated: 2026-04-28 -->
+<!-- Status: Accepted | Version: 0.1 | Created: 2026-04-27 -->
 # UC-09 · Functional Spec — First-login forced password change
 
-**Status:** Done (technical)
-<!-- VAULT-SYNC: implementation landed in feature/sprint2-mvp on top of UC-01. Status flipped Accepted → In Progress → Done (technical). One small implementation note vs the spec's prose: the literal "ollama" check fires *before* the length check so submitting "ollama" produces `cannot_reuse_default` rather than `too_short` (len('ollama')=6, would have failed both). The Test Spec asserts cannot_reuse_default, so this ordering matches the test. Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off. -->
-
+**Status:** Accepted
 **Depends on:** UC-01 (login), UC-08 (bootstrap creates the admin with `must_change_password=true`).
 **User Spec:** [`../../use-cases/UC-09-first-login-password-change.md`](../../use-cases/UC-09-first-login-password-change.md)
 **Test Spec:** [`../test/UC-09-first-login-password-change.md`](../test/UC-09-first-login-password-change.md)

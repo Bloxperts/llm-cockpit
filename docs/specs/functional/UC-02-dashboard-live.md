@@ -1,13 +1,7 @@
-<!-- Status: Done (technical) | Version: 1.0 | Created: 2026-04-26 | Updated: 2026-04-28 -->
+<!-- Status: Accepted | Version: 1.1 | Created: 2026-04-26 | Updated: 2026-04-29 -->
 # UC-02 · Functional Spec — Live dashboard + model placement board
 
-**Status:** Done (technical)
-<!-- VAULT-SYNC: implementation landed on develop in feature/UC-02-dashboard. Status flipped Accepted → In Progress → Done (technical). Spec adaptations recorded inline in the implementation:
-  • The Sprint 3 frontend is plain HTML + inline JS (no Next.js + dnd-kit yet — that is Sprint 4). Drag-drop is replaced with a per-card <select>. Same backend contract.
-  • `last_calls` returns [] until UC-04 lands the chat router writing the `messages` table (TODO comment in routers/dashboard.py).
-  • `_probe_max_context` walks contexts largest-first; spec didn't pin the search strategy. Documented in the source.
-Mirror in vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off on Neuroforge. -->
-
+**Status:** Accepted (v1.1) — perf-test progress UI amendment, accepted by Chris 2026-04-29
 **Depends on:** UC-01 (login), UC-07 (`LLMChat` port + `OllamaLLMChat` adapter), ADR-004 (role gate), **ADR-005 (per-model lifecycle + perf harness)**.
 **Use Case:** [`../../use-cases/UC-02-dashboard-live.md`](../../use-cases/UC-02-dashboard-live.md)
 **Test Spec:** [`../test/UC-02-dashboard-live.md`](../test/UC-02-dashboard-live.md)
@@ -54,7 +48,14 @@ POST  /api/admin/ollama/models/{model}/place                           Depends(r
 
 POST  /api/admin/ollama/models/{model}/perf-test                       Depends(require_role("admin"))
                                        body { contexts?: [int] }
-                                       → SSE: stage events + final result event
+                                       → SSE: stage + progress + heartbeat events;
+                                              terminal: result | cancelled | error
+
+POST  /api/admin/ollama/models/{model}/perf-test/cancel                Depends(require_role("admin"))
+                                       → 200 { cancelled: bool }
+                                       Aborts the in-flight perf test, releases model_lock,
+                                       restores prior placement, writes admin_audit row.
+                                       No `model_perf` row written for cancelled tests.
 
 POST  /api/admin/ollama/models/{model}/pull                            Depends(require_role("admin"))
                                        body { model_name }
@@ -154,6 +155,23 @@ async def perf_test(model: str, contexts: list[int] | None) -> AsyncIterator[dic
 
 The harness is single-flight at the host level — only one perf test at a time, enforced by an additional `host_perf_lock` so the cockpit doesn't perf-test two models at once.
 
+### Perf-test SSE event protocol (v1.1)
+
+The harness emits the following event types so the frontend can render live progress. The frontend MUST handle every one. Order is deterministic for a successful run; `cancelled` may replace any later stage; `error` may replace any event.
+
+| Event | Payload | When |
+|---|---|---|
+| `stage` | `{ name, started_at }` | Entering each stage (`lock`, `unload`, `cold_load`, `throughput`, `context_probe`, `persist`, `restore`) |
+| `progress` | `{ stage, elapsed_ms, tokens_so_far?, tokens_per_sec? }` | At least every 1 s while a stage is active. During `throughput` it carries `tokens_so_far` + `tokens_per_sec`. |
+| `heartbeat` | `{ stage, elapsed_ms }` | Every 1 s if no other event has fired in the last 1 s. Lets the UI prove the run is alive. |
+| `result` | `{ cold_load_seconds, throughput_tps, max_ctx_observed, gpu_layout_diff }` | Successful terminal event. |
+| `cancelled` | `{ stage_at_cancel, elapsed_ms }` | Terminal event when `/perf-test/cancel` is hit during the run. |
+| `error` | `{ stage, message }` | Terminal event on unhandled failure. |
+
+**Cancel cooperatively:** the cancel route flips an `asyncio.Event` that the harness coroutine awaits at every `await` boundary (between stages and inside `chat_stream` consumption). On cancel: abort the in-flight Ollama HTTP request, exit `model_locks[model]`, run the `restore_prior_placement` step, emit `cancelled`, write `admin_audit (action='model_perf_test_cancel', target_model, details_json={ stage_at_cancel, elapsed_ms })`. **Do NOT** call `save_model_perf` for a cancelled run.
+
+**Stalled detection:** if the frontend hasn't seen ANY event (stage, progress, heartbeat, terminal) for 2 s, it MUST surface a "Stalled — last event was X (Ys ago)" warning banner. Cancel button stays available. The 1 s server heartbeat means a stalled state implies network/server trouble, not normal in-progress work.
+
 ### Live snapshot
 
 Two background tasks (FastAPI lifespan):
@@ -171,6 +189,13 @@ Two background tasks (FastAPI lifespan):
 - "+ Add model" opens a side drawer with `react-aria-components` form; submit POSTs to `/api/admin/ollama/models/{model}/pull` and consumes the SSE.
 - Card hover (admin only) shows the action menu (`@radix-ui/react-dropdown-menu`).
 - Card click opens the metrics-history drawer.
+- "Run perf test" action on the card opens the perf-test progress drawer (v1.1):
+  - Stage badge + elapsed timer.
+  - Live tokens/s counter once `throughput` stage starts.
+  - Cancel button visible until a terminal event fires.
+  - "Stalled — last event Xs ago" warning banner if no event for 2 s.
+  - Final result card on `result` (cold-load s, throughput tps, max ctx, gpu layout diff).
+  - On `cancelled` returns the drawer to idle without partial metrics.
 - VRAM bar in column header is a CSS gradient driven by `gpus[i].vram_used_mb / vram_total_mb`.
 
 ## Data model touched
@@ -185,6 +210,9 @@ Two background tasks (FastAPI lifespan):
 - See Use Case §Acceptance criteria. Test Spec automates each.
 - The `/api/dashboard/snapshot` shape matches the schema above and is type-checked in tests.
 - The placement-transition endpoint completes within 12 s for a model that fits on the target GPU (warm-up included).
+- **(v1.1) Perf-test live progress** — when an admin starts a perf test, the UI shows the current stage with elapsed timer, live tokens/s during the throughput stage, and a cancel button — within 250 ms of the SSE connection opening. No "connecting" placeholder for more than 250 ms.
+- **(v1.1) Perf-test cancel** — pressing Cancel during any active stage aborts the run, restores prior placement, writes no `model_perf` row, and returns the drawer to idle. End-to-end < 2 s for the cancel round trip.
+- **(v1.1) Perf-test stalled detection** — if no SSE event arrives for 2 s, the UI shows a Stalled warning while keeping Cancel available. The 1 s server-side heartbeat ensures Stalled means real trouble, not normal cadence.
 
 ## Notes
 
@@ -192,6 +220,12 @@ Two background tasks (FastAPI lifespan):
 - The "requested vs. actual" chip is the cockpit's honesty about Ollama's placement decisions. Not a bug.
 
 ---
+
+<!-- IMPLEMENTATION-NOTES — preserved from /docs HEAD pre-2026-04-29 sync; reconcile against v0.3.0 code at sprint review:
+  • The Sprint 3 frontend was plain HTML + inline JS (no Next.js + dnd-kit yet — that was Sprint 4). Drag-drop was replaced with a per-card <select>. Same backend contract. Verify whether v0.2.x has migrated this view.
+  • `last_calls` returned [] until UC-04 landed the chat router writing the `messages` table. Verify UC-04 is wired through to the dashboard now.
+  • `_probe_max_context` walks contexts largest-first; spec didn't pin the search strategy. Documented in source.
+-->
 
 ## DG-004 output block · port or adapter
 

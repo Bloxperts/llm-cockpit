@@ -1,4 +1,4 @@
-<!-- Status: Live | Updated: 2026-04-27 -->
+<!-- Status: Live | Updated: 2026-04-29 -->
 # Lessons Learned — Index (LLM Cockpit)
 
 Cockpit-local lessons captured at sprint reviews per PROCESS §4a-D. Each LL is one insight, written precisely; format mirrors AgenticBlox `lessons-learned/`.
@@ -7,7 +7,7 @@ Lessons that apply equally to AgenticBlox are **also** filed in `020 Projects/Ag
 
 | LL | Title | Sprint | Theme |
 |----|-------|--------|-------|
-| — | (no entries yet — Sprint 0 has not yet completed) | — | — |
+| LL-001 | GPU1 placement needs host-level proof, not UI inference | Sprint 10 | Boundary / Ops |
 
 ## Themes (for quick scanning)
 

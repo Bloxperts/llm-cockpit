@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,6 @@ from cockpit.db import make_engine, make_session_factory, upgrade_to_head
 from cockpit.main import create_app
 from cockpit.models import (
     AdminAudit,
-    LoginAudit,
     MetricsSnapshot,
     ModelConfig,
     ModelPerf,
@@ -53,7 +52,6 @@ from cockpit.services.metrics import (
     assemble_dashboard_snapshot,
 )
 from cockpit.services.users import hash_password
-
 
 # --- Fixtures -------------------------------------------------------------
 
@@ -163,9 +161,7 @@ async def test_gpu_sampler_persists_one_row_per_gpu_per_sample(
     telemetry = FakeTelemetry(
         snapshots=[gpu_snapshot(0, vram_used_mb=10000), gpu_snapshot(1, vram_used_mb=20000)]
     )
-    sampler = GpuSampler(
-        telemetry=telemetry, session_factory=session_factory, state=state, interval_s=1.0
-    )
+    sampler = GpuSampler(telemetry=telemetry, session_factory=session_factory, state=state, interval_s=1.0)
     await sampler.sample_once()
     assert state.last_snapshots is not None
     assert len(state.last_snapshots) == 2
@@ -183,9 +179,7 @@ async def test_gpu_sampler_writes_nothing_when_no_telemetry(
     """`Telemetry.sample()` returns None on hosts without nvidia-smi."""
     state = GpuSamplerState()
     telemetry = FakeTelemetry(return_none=True)
-    sampler = GpuSampler(
-        telemetry=telemetry, session_factory=session_factory, state=state
-    )
+    sampler = GpuSampler(telemetry=telemetry, session_factory=session_factory, state=state)
     await sampler.sample_once()
     assert state.last_snapshots is None
     with session_factory() as session:
@@ -198,9 +192,7 @@ async def test_gpu_sampler_records_error_on_telemetry_unavailable(
 ) -> None:
     state = GpuSamplerState()
     telemetry = FakeTelemetry(raise_unavailable=True)
-    sampler = GpuSampler(
-        telemetry=telemetry, session_factory=session_factory, state=state
-    )
+    sampler = GpuSampler(telemetry=telemetry, session_factory=session_factory, state=state)
     await sampler.sample_once()
     assert state.last_error is not None
     assert state.last_success_at is None
@@ -212,9 +204,7 @@ async def test_model_state_sampler_populates_state() -> None:
     state = ModelStateSamplerState()
     chat = FakeLLMChat(
         models=[model_info("gemma3:27b"), model_info("qwen3-coder:30b")],
-        loaded=[
-            LoadedModel(name="gemma3:27b", size_vram=16 * 1024 * 1024 * 1024, until=None)
-        ],
+        loaded=[LoadedModel(name="gemma3:27b", size_vram=16 * 1024 * 1024 * 1024, until=None)],
     )
     sampler = ModelStateSampler(chat=chat, state=state, interval_s=1.0)
     await sampler.sample_once()
@@ -258,9 +248,7 @@ def test_model_state_status_healthy() -> None:
 
 def test_model_state_status_degraded() -> None:
     """One sampler erroring → degraded."""
-    g = GpuSamplerState(
-        last_snapshots=None, last_error="oops", last_error_at=100.0
-    )
+    g = GpuSamplerState(last_snapshots=None, last_error="oops", last_error_at=100.0)
     m = ModelStateSamplerState(last_success_at=100.0)
     assert _model_state_status(g, m, now=110.0) == "degraded"
 
@@ -268,9 +256,7 @@ def test_model_state_status_degraded() -> None:
 def test_model_state_status_ollama_unreachable() -> None:
     """Model sampler failing > 30 s → ollama_unreachable."""
     g = GpuSamplerState(last_snapshots=[], last_success_at=100.0)
-    m = ModelStateSamplerState(
-        last_success_at=None, last_error="boom", last_error_at=100.0
-    )
+    m = ModelStateSamplerState(last_success_at=None, last_error="boom", last_error_at=100.0)
     assert _model_state_status(g, m, now=131.0) == "ollama_unreachable"
 
 
@@ -278,14 +264,10 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
     settings: Settings, session_factory: sessionmaker
 ) -> None:
     """T-10 — snapshot validates against the DashboardSnapshot pydantic schema."""
-    g = GpuSamplerState(
-        last_snapshots=[gpu_snapshot(0), gpu_snapshot(1)], last_success_at=1.0
-    )
+    g = GpuSamplerState(last_snapshots=[gpu_snapshot(0), gpu_snapshot(1)], last_success_at=1.0)
     m = ModelStateSamplerState(
         available_models=[model_info("gemma3:27b")],
-        loaded_models=[
-            LoadedModel(name="gemma3:27b", size_vram=16 * 1024 * 1024 * 1024, until=None)
-        ],
+        loaded_models=[LoadedModel(name="gemma3:27b", size_vram=16 * 1024 * 1024 * 1024, until=None)],
         last_success_at=1.0,
     )
     with session_factory() as session:
@@ -293,9 +275,7 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
         session.add(ModelTag(model="gemma3:27b", tag="chat", source="auto"))
         session.commit()
 
-        payload = assemble_dashboard_snapshot(
-            session=session, gpu_state=g, model_state=m, now=2.0
-        )
+        payload = assemble_dashboard_snapshot(session=session, gpu_state=g, model_state=m, now=2.0)
 
     snap = DashboardSnapshot.model_validate(payload)
     assert {gp.index for gp in snap.gpus} == {0, 1}
@@ -334,9 +314,7 @@ def test_write_admin_audit_inserts_row(session_factory: sessionmaker) -> None:
 # =========================================================================
 
 
-def test_dashboard_snapshot_requires_settled_session(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_dashboard_snapshot_requires_settled_session(settings: Settings, seeded_users: dict) -> None:
     """T-15."""
     client = _build_client(settings)
     # No login → 401.
@@ -344,9 +322,7 @@ def test_dashboard_snapshot_requires_settled_session(
     assert r.status_code == 401
 
 
-def test_dashboard_snapshot_returns_payload_validating_schema(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_dashboard_snapshot_returns_payload_validating_schema(settings: Settings, seeded_users: dict) -> None:
     """T-10 + T-12 + T-13."""
     chat = FakeLLMChat(
         models=[model_info("gemma3:27b"), model_info("qwen3-coder:30b")],
@@ -371,9 +347,7 @@ def test_dashboard_snapshot_returns_payload_validating_schema(
     assert snap.status in ("healthy", "degraded", "ollama_unreachable")
 
 
-def test_dashboard_no_gpu_collapses_columns(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_dashboard_no_gpu_collapses_columns(settings: Settings, seeded_users: dict) -> None:
     """T-11."""
     client = _build_client(
         settings,
@@ -428,9 +402,7 @@ async def test_stream_event_generator_yields_snapshot(
                 return self._calls > 1  # connected on first poll, then disconnected
 
         req = _DisconnectAfterOne(client.app)
-        events = [
-            event async for event in stream_event_generator(req, interval_s=0.001)
-        ]
+        events = [event async for event in stream_event_generator(req, interval_s=0.001)]
         assert len(events) == 1
         assert events[0]["event"] == "snapshot"
         payload = json.loads(events[0]["data"])
@@ -501,14 +473,10 @@ def _seed_models_state(client: TestClient, *, names: list[str]) -> None:
 
 
 def _seed_gpu_state(client: TestClient, *, gpu_count: int) -> None:
-    client.app.state.gpu_state.last_snapshots = [
-        gpu_snapshot(i) for i in range(gpu_count)
-    ]
+    client.app.state.gpu_state.last_snapshots = [gpu_snapshot(i) for i in range(gpu_count)]
 
 
-def test_place_gpu0_sends_keep_alive_24h_and_main_gpu_0(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_gpu0_sends_keep_alive_24h_and_main_gpu_0(settings: Settings, seeded_users: dict) -> None:
     """T-20 + T-21."""
     chat = FakeLLMChat(
         models=[model_info("gemma3:27b")],
@@ -555,9 +523,7 @@ def test_place_gpu0_sends_keep_alive_24h_and_main_gpu_0(
             cfg = session.query(ModelConfig).filter_by(model="gemma3:27b").one()
             assert cfg.placement == "gpu0"
             audits = list(
-                session.execute(
-                    select(AdminAudit).where(AdminAudit.action == "model_place")
-                ).scalars()
+                session.execute(select(AdminAudit).where(AdminAudit.action == "model_place")).scalars()
             )
             assert len(audits) == 1
             details = json.loads(audits[0].details_json)
@@ -567,9 +533,7 @@ def test_place_gpu0_sends_keep_alive_24h_and_main_gpu_0(
         engine.dispose()
 
 
-def test_place_multi_gpu_sends_num_gpu_99(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_multi_gpu_sends_num_gpu_99(settings: Settings, seeded_users: dict) -> None:
     """T-22."""
     chat = FakeLLMChat(
         models=[model_info("m")],
@@ -594,9 +558,7 @@ def test_place_multi_gpu_sends_num_gpu_99(
     assert "main_gpu" not in warm["options"]
 
 
-def test_place_on_demand_sends_keep_alive_zero(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_on_demand_sends_keep_alive_zero(settings: Settings, seeded_users: dict) -> None:
     """T-23 + T-24."""
     chat = FakeLLMChat(
         models=[model_info("m")],
@@ -618,13 +580,10 @@ def test_place_on_demand_sends_keep_alive_zero(
     assert warm["options"]["keep_alive"] == 0
 
 
-def test_place_invalid_placement_returns_422(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_invalid_placement_returns_422(settings: Settings, seeded_users: dict) -> None:
     """T-25."""
     chat = FakeLLMChat(models=[model_info("m")])
-    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(return_none=True),
-                           skip_samplers=True)
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(return_none=True), skip_samplers=True)
     with client:
         _seed_gpu_state(client, gpu_count=0)
         _login_admin(client, seeded_users)
@@ -636,9 +595,7 @@ def test_place_invalid_placement_returns_422(
     assert r.json()["detail"]["detail"] == "invalid_placement"
 
 
-def test_place_detects_main_gpu_mismatch(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_detects_main_gpu_mismatch(settings: Settings, seeded_users: dict) -> None:
     """T-26 — mismatch=True when post-warm VRAM grew on a different GPU than requested."""
     chat = FakeLLMChat(
         models=[model_info("m")],
@@ -677,13 +634,12 @@ def test_place_detects_main_gpu_mismatch(
     assert body["main_gpu_actual"] == 1
 
 
-def test_place_requires_admin(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_requires_admin(settings: Settings, seeded_users: dict) -> None:
     """T-27."""
     chat = FakeLLMChat(models=[model_info("m")])
-    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]),
-                           skip_samplers=True)
+    client = _build_client(
+        settings, chat=chat, telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]), skip_samplers=True
+    )
     with client:
         _seed_gpu_state(client, gpu_count=1)
         _login_chat_user(client, seeded_users)
@@ -699,13 +655,10 @@ def test_place_requires_admin(
 # =========================================================================
 
 
-def test_delete_model_removes_config_and_audits(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_delete_model_removes_config_and_audits(settings: Settings, seeded_users: dict) -> None:
     """T-41."""
     chat = FakeLLMChat(models=[model_info("m")], known_models={"m"})
-    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]),
-                           skip_samplers=True)
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
 
     # Pre-seed a model_config row.
     engine = make_engine(settings.db_url)
@@ -729,34 +682,26 @@ def test_delete_model_removes_config_and_audits(
         with factory() as session:
             assert session.query(ModelConfig).filter_by(model="m").first() is None
             audits = list(
-                session.execute(
-                    select(AdminAudit).where(AdminAudit.action == "model_delete")
-                ).scalars()
+                session.execute(select(AdminAudit).where(AdminAudit.action == "model_delete")).scalars()
             )
             assert len(audits) == 1
     finally:
         engine.dispose()
 
 
-def test_delete_model_404_when_not_found(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_delete_model_404_when_not_found(settings: Settings, seeded_users: dict) -> None:
     chat = FakeLLMChat(models=[], known_models={"only-known"})
-    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]),
-                           skip_samplers=True)
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
     with client:
         _login_admin(client, seeded_users)
         r = client.delete("/api/admin/ollama/models/ghost")
     assert r.status_code == 404
 
 
-def test_settings_patch_writes_only_present_fields(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_settings_patch_writes_only_present_fields(settings: Settings, seeded_users: dict) -> None:
     """T-42."""
     chat = FakeLLMChat(models=[model_info("m")])
-    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]),
-                           skip_samplers=True)
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
 
     engine = make_engine(settings.db_url)
     factory = make_session_factory(engine)
@@ -795,9 +740,7 @@ def test_settings_patch_writes_only_present_fields(
         engine.dispose()
 
 
-def test_pull_model_streams_and_creates_default_config(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_pull_model_streams_and_creates_default_config(settings: Settings, seeded_users: dict) -> None:
     """T-40."""
     from cockpit.ports.llm_chat import PullProgress
 
@@ -808,8 +751,7 @@ def test_pull_model_streams_and_creates_default_config(
             PullProgress(status="success"),
         ]
     )
-    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]),
-                           skip_samplers=True)
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
     with client:
         _login_admin(client, seeded_users)
         with client.stream("POST", "/api/admin/ollama/models/new-model/pull") as r:
@@ -817,7 +759,7 @@ def test_pull_model_streams_and_creates_default_config(
             events = []
             for line in r.iter_lines():
                 if line and line.startswith("data:"):
-                    events.append(line[len("data:"):].strip())
+                    events.append(line[len("data:") :].strip())
     assert any("pulling manifest" in e for e in events)
     assert any("success" in e for e in events)
 
@@ -829,9 +771,7 @@ def test_pull_model_streams_and_creates_default_config(
             cfg = session.query(ModelConfig).filter_by(model="new-model").one()
             assert cfg.placement == "available"
             audits = list(
-                session.execute(
-                    select(AdminAudit).where(AdminAudit.action == "model_pull")
-                ).scalars()
+                session.execute(select(AdminAudit).where(AdminAudit.action == "model_pull")).scalars()
             )
             assert len(audits) == 1
     finally:
@@ -867,9 +807,19 @@ def _make_perf_chat() -> FakeLLMChat:
     return fake
 
 
-def test_perf_test_emits_stage_sequence_and_writes_perf_row(
-    settings: Settings, seeded_users: dict
-) -> None:
+def _iter_sse_events(response) -> Any:
+    event = "message"
+    for line in response.iter_lines():
+        if not line:
+            continue
+        if line.startswith("event:"):
+            event = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            yield event, json.loads(line[len("data:") :].strip())
+            event = "message"
+
+
+def test_perf_test_emits_stage_sequence_and_writes_perf_row(settings: Settings, seeded_users: dict) -> None:
     """T-30 + T-31."""
     chat = _make_perf_chat()
     client = _build_client(
@@ -899,15 +849,21 @@ def test_perf_test_emits_stage_sequence_and_writes_perf_row(
         ) as r:
             assert r.status_code == 200
             stage_names: list[str] = []
+            saw_progress = False
             saw_result = False
-            for line in r.iter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = json.loads(line[len("data:"):].strip())
-                if "name" in payload:
+            for event, payload in _iter_sse_events(r):
+                if event == "stage":
                     stage_names.append(payload["name"])
-                if "id" in payload and "model" in payload and "measured_at" in payload:
+                if event == "progress":
+                    saw_progress = True
+                    assert "stage" in payload
+                    assert "elapsed_ms" in payload
+                if event == "result":
                     saw_result = True
+                    assert payload["gpu_layout_diff"] == {
+                        "gpu0_vram_growth_mb": 0,
+                        "gpu1_vram_growth_mb": 0,
+                    }
 
     assert "lock" in stage_names
     assert "unload" in stage_names
@@ -916,6 +872,7 @@ def test_perf_test_emits_stage_sequence_and_writes_perf_row(
     assert "context_probe" in stage_names
     assert "persist" in stage_names
     assert "restore" in stage_names
+    assert saw_progress
     assert saw_result
 
     # T-31: model_perf row written.
@@ -930,9 +887,7 @@ def test_perf_test_emits_stage_sequence_and_writes_perf_row(
             assert row.cold_load_seconds is not None
             assert row.throughput_tps is not None
             audits = list(
-                session.execute(
-                    select(AdminAudit).where(AdminAudit.action == "model_perf_test")
-                ).scalars()
+                session.execute(select(AdminAudit).where(AdminAudit.action == "model_perf_test")).scalars()
             )
             assert len(audits) == 1
     finally:
@@ -978,9 +933,7 @@ def test_admin_endpoints_block_non_admins(
         ("POST", "/api/admin/ollama/models/m/place", {"placement": "gpu0"}),
     ],
 )
-def test_dashboard_and_admin_block_unauth(
-    settings: Settings, method: str, path: str, body
-) -> None:
+def test_dashboard_and_admin_block_unauth(settings: Settings, method: str, path: str, body) -> None:
     client = _build_client(settings, skip_samplers=True)
     with client:
         if body is None:
@@ -995,9 +948,7 @@ def test_dashboard_and_admin_block_unauth(
 # =========================================================================
 
 
-def test_place_404_when_model_not_found(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_404_when_model_not_found(settings: Settings, seeded_users: dict) -> None:
     chat = FakeLLMChat(models=[], known_models={"only-known"})
     client = _build_client(
         settings,
@@ -1015,9 +966,7 @@ def test_place_404_when_model_not_found(
     assert r.status_code == 404
 
 
-def test_place_503_when_ollama_unreachable(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_place_503_when_ollama_unreachable(settings: Settings, seeded_users: dict) -> None:
     """Warm-up that raises OllamaUnreachableError → 503 ollama_unreachable."""
 
     class UnreachableChat(FakeLLMChat):
@@ -1043,18 +992,14 @@ def test_place_503_when_ollama_unreachable(
     assert r.json()["detail"]["detail"] == "ollama_unreachable"
 
 
-def test_pull_emits_error_event_on_unreachable(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_pull_emits_error_event_on_unreachable(settings: Settings, seeded_users: dict) -> None:
     class UnreachablePullChat(FakeLLMChat):
         async def pull_model(self, model: str):
             raise OllamaUnreachableError("simulated")
             yield  # unreachable
 
     chat = UnreachablePullChat()
-    client = _build_client(
-        settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True
-    )
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
     with client:
         _login_admin(client, seeded_users)
         with client.stream("POST", "/api/admin/ollama/models/x/pull") as r:
@@ -1067,13 +1012,9 @@ def test_pull_emits_error_event_on_unreachable(
             assert saw_error
 
 
-def test_settings_patch_writes_all_four_fields(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_settings_patch_writes_all_four_fields(settings: Settings, seeded_users: dict) -> None:
     chat = FakeLLMChat(models=[model_info("m")])
-    client = _build_client(
-        settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True
-    )
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
 
     with client:
         _login_admin(client, seeded_users)
@@ -1096,26 +1037,20 @@ def test_settings_patch_writes_all_four_fields(
     }
 
 
-def test_delete_503_when_ollama_unreachable(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_delete_503_when_ollama_unreachable(settings: Settings, seeded_users: dict) -> None:
     class UnreachableDeleteChat(FakeLLMChat):
         async def delete_model(self, model: str) -> None:
             raise OllamaUnreachableError("simulated")
 
     chat = UnreachableDeleteChat(models=[model_info("m")], known_models={"m"})
-    client = _build_client(
-        settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True
-    )
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
     with client:
         _login_admin(client, seeded_users)
         r = client.delete("/api/admin/ollama/models/m")
     assert r.status_code == 503
 
 
-def test_perf_test_emits_error_on_model_not_found(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_perf_test_emits_error_on_model_not_found(settings: Settings, seeded_users: dict) -> None:
     class NotFoundColdChat(FakeLLMChat):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
@@ -1156,9 +1091,113 @@ def test_perf_test_emits_error_on_model_not_found(
             assert saw_error
 
 
-def test_perf_test_emits_error_on_unreachable(
+def test_perf_test_cancelled_event_skips_perf_row(
+    settings: Settings, seeded_users: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cockpit.routers import admin_ollama as ao
+
+    monkeypatch.setattr(ao, "PERF_HEARTBEAT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(ao, "LOADED_POLL_INTERVAL_S", 0.01)
+    app_holder: dict[str, Any] = {}
+
+    class CancelOnSampleTelemetry(FakeTelemetry):
+        async def sample(self):
+            run = app_holder["app"].state.perf_test_runs.get("m")
+            if run is not None:
+                run.cancel_event.set()
+            return await super().sample()
+
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        loaded=[],
+        tokens=["ok"],
+    )
+    client = _build_client(
+        settings,
+        chat=chat,
+        telemetry=CancelOnSampleTelemetry(snapshots=[gpu_snapshot(0)]),
+        skip_samplers=True,
+    )
+    app_holder["app"] = client.app
+    with client:
+        _seed_gpu_state(client, gpu_count=1)
+        _login_admin(client, seeded_users)
+        with client.stream(
+            "POST",
+            "/api/admin/ollama/models/m/perf-test",
+            json={"contexts": [4096]},
+        ) as r:
+            assert r.status_code == 200
+            saw_cancelled = False
+            for event, payload in _iter_sse_events(r):
+                if event == "cancelled":
+                    saw_cancelled = True
+                    assert payload["stage_at_cancel"] in {"cold_load", "restore"}
+                    assert "elapsed_ms" in payload
+                    break
+            assert saw_cancelled
+
+    with make_session_factory(make_engine(settings.db_url))() as session:
+        assert list(session.execute(select(ModelPerf)).scalars()) == []
+        audits = list(
+            session.execute(select(AdminAudit).where(AdminAudit.action == "model_perf_test_cancel")).scalars()
+        )
+        assert len(audits) == 1
+
+
+def test_perf_test_cancel_route_flips_active_run_event(settings: Settings, seeded_users: dict) -> None:
+    from cockpit.routers import admin_ollama as ao
+
+    client = _build_client(
+        settings,
+        chat=FakeLLMChat(models=[model_info("m")]),
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]),
+        skip_samplers=True,
+    )
+    with client:
+        _login_admin(client, seeded_users)
+        run = ao._PerfRunState(model="m")
+        client.app.state.perf_test_runs["m"] = run
+        r = client.post("/api/admin/ollama/models/m/perf-test/cancel")
+    assert r.status_code == 200
+    assert r.json() == {"cancelled": True}
+    assert run.cancel_event.is_set()
+
+
+def test_perf_test_cancel_route_returns_false_without_active_run(
     settings: Settings, seeded_users: dict
 ) -> None:
+    client = _build_client(
+        settings,
+        chat=FakeLLMChat(models=[model_info("m")]),
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]),
+        skip_samplers=True,
+    )
+    with client:
+        _login_admin(client, seeded_users)
+        r = client.post("/api/admin/ollama/models/m/perf-test/cancel")
+    assert r.status_code == 200
+    assert r.json() == {"cancelled": False}
+
+
+@pytest.mark.asyncio
+async def test_perf_await_helper_emits_heartbeat_on_slow_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cockpit.routers import admin_ollama as ao
+
+    monkeypatch.setattr(ao, "PERF_HEARTBEAT_INTERVAL_S", 0.01)
+    state = ao._PerfRunState(model="m")
+    state.stage = "throughput"
+    seen: list[tuple[str, dict[str, Any]]] = []
+    result: dict[str, Any] = {}
+    async for event in ao._await_with_heartbeat(asyncio.sleep(0.03, result=42), state, result):
+        seen.append((event["event"], json.loads(event["data"])))
+    assert result["value"] == 42
+    assert any(event == "heartbeat" and payload["stage"] == "throughput" for event, payload in seen)
+
+
+def test_perf_test_emits_error_on_unreachable(settings: Settings, seeded_users: dict) -> None:
     class UnreachableColdChat(FakeLLMChat):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
@@ -1197,9 +1236,7 @@ def test_perf_test_emits_error_on_unreachable(
             assert saw_error
 
 
-def test_perf_test_with_prior_on_demand_placement_drops_after(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_perf_test_with_prior_on_demand_placement_drops_after(settings: Settings, seeded_users: dict) -> None:
     """When prior placement is on_demand, perf-test's restore stage calls
     `_drop_model` instead of warming back up — exercises that branch."""
     chat = _make_perf_chat()
@@ -1232,7 +1269,7 @@ def test_perf_test_with_prior_on_demand_placement_drops_after(
             stages = []
             for line in r.iter_lines():
                 if line and line.startswith("data:"):
-                    payload = json.loads(line[len("data:"):].strip())
+                    payload = json.loads(line[len("data:") :].strip())
                     if "name" in payload:
                         stages.append(payload["name"])
             assert "restore" in stages
@@ -1409,15 +1446,11 @@ async def test_wait_unloaded_returns_false_on_timeout(
 
     monkeypatch.setattr(ao, "LOADED_POLL_INTERVAL_S", 0.001)
     # `loaded()` always lists "m" → never unloads → timeout
-    chat = FakeLLMChat(
-        loaded=[LoadedModel(name="m", size_vram=1, until=None)]
-    )
+    chat = FakeLLMChat(loaded=[LoadedModel(name="m", size_vram=1, until=None)])
     assert await ao._wait_unloaded(chat, "m", timeout_s=0.01) is False
 
 
-def test_replace_existing_config_uses_else_branch(
-    settings: Settings, seeded_users: dict
-) -> None:
+def test_replace_existing_config_uses_else_branch(settings: Settings, seeded_users: dict) -> None:
     """First place creates a new model_config row; second place updates the
     existing row — exercises `_upsert_model_config`'s else branch (line 212)."""
     chat = FakeLLMChat(
