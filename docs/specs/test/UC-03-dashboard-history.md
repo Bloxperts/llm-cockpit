@@ -17,7 +17,7 @@ in-process.
 
 Three test layers:
 
-1. **Migration** — `0006_history.py` creates the two new tables, plus
+1. **Migration** — `0005_history.py` creates the two new tables, plus
    indexes on `metrics_snapshot.ts` and `messages.ts` if not already
    present. Verified by an `alembic upgrade head` round-trip in a fresh
    SQLite DB and assertion-style row inserts.
@@ -44,9 +44,9 @@ the sprint-review check.
 
 ## Test cases
 
-### Migration 0006 (1 test)
+### Migration 0005 (1 test)
 
-- **`test_migration_0006_round_trip`** — `alembic upgrade head` against a
+- **`test_migration_0005_round_trip`** — `alembic upgrade head` against a
   fresh SQLite engine, then `downgrade -1` then `upgrade head` again;
   asserts both new tables exist after upgrade, are gone after downgrade,
   and that an `INSERT … ON CONFLICT (bucket_ts, gpu_index) DO NOTHING`
