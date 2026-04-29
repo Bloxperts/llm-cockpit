@@ -7,10 +7,10 @@
 
 ## Current sprint
 
-**Sprint 10 (technical implementation complete; PR / user acceptance pending) — Perf-test progress UI + GPU1 placement diagnose.**
+**Sprint 10 (closed 2026-04-29, v0.4.0) — Perf-test progress UI + GPU1 placement diagnose.**
 
-**Window:** 2026-04-29 — in review.
-**Target release:** `v0.4.0`.
+**Window:** 2026-04-29.
+**Release:** `v0.4.0`.
 
 **Goal**
 
@@ -21,8 +21,8 @@
 
 | Item | Spec | Plan | Status |
 |---|---|---|---|
-| UC-02 v1.1 perf-test progress UI | Functional Spec Accepted (v1.1, 2026-04-29) | SSE-event refactor on the existing perf-test endpoint + cancel route + frontend drawer with live progress, cancel button, stalled banner. No new migration. | Done (technical) — branch `feature/UC-02-v1.1-perf-test-progress`, target PR to `develop`. |
-| BUG-GPU1 placement diagnose | Draft LL-001 | Reproduce; inspect `actual.mismatch` + `actual.main_gpu_actual`; decide knob (Ollama best-effort / env var / process-per-GPU / code fix). | Done (diagnose) — Neuroforge reproduction shows `main_gpu=1` still loads `phi4:14b` onto CUDA0. Recommendation: document and accept Ollama best-effort placement for v0.4.0; no fix commit in Sprint 10. |
+| UC-02 v1.1 perf-test progress UI | Functional Spec Accepted (v1.1, 2026-04-29) | SSE-event refactor on the existing perf-test endpoint + cancel route + frontend drawer with live progress, cancel button, stalled banner. No new migration. | User Accepted — Chris accepted PR + user acceptance 2026-04-29. |
+| BUG-GPU1 placement diagnose | Accepted LL-001 | Reproduce; inspect `actual.mismatch` + `actual.main_gpu_actual`; decide knob (Ollama best-effort / env var / process-per-GPU / code fix). | User Accepted — Neuroforge reproduction shows `main_gpu=1` still loads `phi4:14b` onto CUDA0. Recommendation: document and accept Ollama best-effort placement for v0.4.0; no fix commit in Sprint 10. |
 
 **Out of scope:** UC-08 Slice E (first-run installer Part B reconcile — separate ticket). v2 backlog (external access, mobile/PWA).
 
@@ -33,6 +33,7 @@
 - 2026-04-29: Neuroforge NVIDIA driver/userspace mismatch was fixed by reboot. Both RTX 3090 cards are visible under driver `580.142`; passwordless sudo for scoped operational checks is configured.
 - 2026-04-29: Direct Ollama reproduction sent the cockpit-equivalent hint `options.main_gpu=1` for `phi4:14b`. Ollama loaded the model on CUDA0/GPU 0 (`nvidia-smi`: GPU 0 ~10752 MiB, GPU 1 ~4 MiB; Ollama logs: `CUDA0 model buffer`, `CUDA0 KV buffer`). Conclusion recorded in LL-001: single-daemon Ollama placement is best-effort; no GPU1 fix commit in Sprint 10.
 - 2026-04-29: UC-02 v1.1 implementation completed locally: perf-test SSE events (`stage`, `progress`, `heartbeat`, `result`, `cancelled`, `error`), cancel route, frontend progress drawer, stalled warning, version bump to `0.4.0`, changelog entry, backend tests, and rebuilt bundled frontend. Full pytest passed; frontend build passed. `npm run lint` still has pre-existing React 19 lint failures outside the touched dashboard work.
+- 2026-04-29: Chris accepted PR + User Acceptance. Sprint 10 is closed for `v0.4.0`.
 
 ---
 
@@ -40,6 +41,7 @@
 
 | Tag | Date | Sprint | What shipped |
 |---|---|---|---|
+| `v0.4.0` | 2026-04-29 | 10 | UC-02 v1.1 perf-test progress UI: SSE progress/heartbeat/cancel/error protocol, cancel route, progress drawer with live tokens/s and stalled detection. BUG-GPU1 diagnose-only LL-001 accepted: single-daemon Ollama placement is best-effort on Neuroforge. PR #17 → pending merge/tag at acceptance time. |
 | `v0.3.1` | 2026-04-28 | 9 | UC-10 admin Ollama config page (`/admin/ollama` four panels: tags, defaults, metrics, audit log + CSV export). 431 tests green. PR #16 → 210c2f4. |
 | `v0.3.0` | 2026-04-28 | 8 | UC-03 dashboard history (`/dashboard` Live/History tabs, 24h/7d, 4 chart cards). Migration `0005_history.py`. Aggregators every 60 s / 3600 s. Recharts dep. PR #15 → 5ba134f. |
 | `v0.2.1` | 2026-04-28 | 7 | Auth UX + session control: optimistic chat bubble, AppHeader user menu (change-pw + session-TTL dropdown), `session_ttl_days`, `token_version` + revoke-sessions, `is_active` + deactivate/reactivate (last-active-admin guard). Migration `0004_auth_ux.py`. 365 tests green. PR #14 → 424a7c7. |
@@ -194,9 +196,9 @@ Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learne
 
 ## Backlog (post-Sprint-9)
 
-1. **Sprint 10** — UC-02 v1.1 perf-test progress UI + GPU1 placement diagnose. → target `v0.4.0`.
-2. **PyPI publish sprint** — once feature-complete, set up PyPI account + `[project]` metadata audit + GitHub Actions OIDC trusted-publisher workflow. Reference: memory `project_pypi_goal.md`.
-3. **UC-08 Slice E reconcile** — first-run installer Part B status — verify against shipped code; close or reopen as needed.
+1. **PyPI publish sprint** — once feature-complete, set up PyPI account + `[project]` metadata audit + GitHub Actions OIDC trusted-publisher workflow. Reference: memory `project_pypi_goal.md`.
+2. **UC-08 Slice E reconcile** — first-run installer Part B status — verify against shipped code; close or reopen as needed.
+3. **GPU hard-isolation architecture** — only if Chris wants strict per-GPU pinning after LL-001; likely one Ollama process per GPU with UUID-based process visibility.
 4. **Vault drift cleanup** — Sprint 2-7 implementation drift notes were stranded as `<!-- VAULT-SYNC: -->` comments in `/docs` and have been consolidated. Future improvement: add a sprint-end mirror-back step to PROCESS.md §8.
 5. **v2 backlog** — external access (VPN / Reverse Proxy / OIDC), Mobile/PWA. Reference: memory `project_v2_backlog.md`.
 
@@ -235,3 +237,6 @@ Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learne
 | 2026-04-29 | UC-02 functional spec | Accepted v1.0 → Accepted v1.1 (perf-test progress UI amendment) | Chris |
 | 2026-04-29 | Sprint 10 | — → Planning | Chris |
 | 2026-04-29 | Sprint 10 | Planning → In review (technical implementation complete; PR pending) | Codex |
+| 2026-04-29 | UC-02 v1.1 | Done (technical) → User Accepted | Chris |
+| 2026-04-29 | LL-001 GPU1 placement | Draft → Accepted | Chris |
+| 2026-04-29 | Sprint 10 | In review → Closed (v0.4.0) | Chris |

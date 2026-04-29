@@ -1,4 +1,4 @@
-<!-- Status: Draft | Created: 2026-04-29 | Sprint: 10 -->
+<!-- Status: Accepted | Created: 2026-04-29 | Accepted: 2026-04-29 | Sprint: 10 -->
 # LL-001 · GPU1 placement needs host-level proof, not UI inference
 
 ## Context
