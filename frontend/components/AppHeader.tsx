@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
 import { hasAtLeast, useAuthStore } from "@/lib/auth-store";
-import { getEffectiveTheme, toggleTheme } from "@/lib/dark-mode";
+import { Theme, getEffectiveTheme, toggleTheme } from "@/lib/dark-mode";
 
 // Sprint 7 — JWT lifetime preferences. Mirrors the backend's TTL_MAP.
 const TTL_OPTIONS: Array<{ days: number; label: string }> = [
@@ -21,13 +21,9 @@ export function AppHeader() {
   const setMe = useAuthStore((s) => s.setMe);
   const reset = useAuthStore((s) => s.reset);
   const pathname = usePathname();
-  const [theme, setThemeState] = useState<"light" | "dark">("light");
+  const [theme, setThemeState] = useState<Theme>(() => getEffectiveTheme());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setThemeState(getEffectiveTheme());
-  }, []);
 
   // Close the dropdown on outside-click / Escape.
   useEffect(() => {
@@ -90,12 +86,18 @@ export function AppHeader() {
   ];
 
   return (
-    <header className="h-14 flex items-center border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
-      <div className="max-w-7xl w-full mx-auto px-4 flex items-center gap-6">
-        <span className="font-semibold text-neutral-900 dark:text-white tracking-tight">
-          LLM Cockpit
-        </span>
-        <nav className="flex gap-1 text-sm">
+    <header className="sticky top-0 z-40 border-b border-[var(--cockpit-border)] bg-[color-mix(in_srgb,var(--cockpit-surface)_92%,transparent)] backdrop-blur">
+      <div className="max-w-7xl w-full mx-auto px-3 sm:px-4 min-h-14 flex flex-wrap items-center gap-3 sm:gap-5 py-2">
+        <Link
+          href="/dashboard/"
+          className="flex items-center gap-2 font-semibold text-neutral-950 dark:text-white tracking-tight"
+        >
+          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-neutral-950 text-white dark:bg-white dark:text-neutral-950 font-mono text-sm">
+            LC
+          </span>
+          <span>LLM Cockpit</span>
+        </Link>
+        <nav className="flex flex-wrap gap-1 text-sm">
           {links
             .filter((l) => l.show)
             .map((l) => {
@@ -104,9 +106,9 @@ export function AppHeader() {
                 <Link
                   key={l.href}
                   href={l.href}
-                  className={`px-3 py-1.5 rounded-full transition ${
+                  className={`px-3 py-1.5 rounded-md font-medium ${
                     active
-                      ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                      ? "bg-neutral-950 text-white dark:bg-white dark:text-neutral-950"
                       : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
                   }`}
                 >
@@ -120,7 +122,7 @@ export function AppHeader() {
             type="button"
             onClick={onThemeToggle}
             aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="rounded-full p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
+            className="rounded-md p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
           >
             {theme === "dark" ? <SunIcon /> : <MoonIcon />}
           </button>
@@ -131,14 +133,14 @@ export function AppHeader() {
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => setMenuOpen((v) => !v)}
-              className="text-xs rounded-md border border-neutral-200 dark:border-neutral-700 px-3 py-1 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200"
+              className="text-xs rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] px-3 py-1.5 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200"
             >
               {me.username} · {me.role} ▾
             </button>
             {menuOpen ? (
               <div
                 role="menu"
-                className="absolute right-0 mt-2 w-64 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg z-50 p-2 text-xs"
+                className="absolute right-0 mt-2 w-64 rounded-lg border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] shadow-lg z-50 p-2 text-xs"
               >
                 <Link
                   href="/change-password/"
@@ -156,7 +158,7 @@ export function AppHeader() {
                     <select
                       value={String(me.session_ttl_days ?? 7)}
                       onChange={(e) => void changeSessionTtl(Number(e.target.value))}
-                      className="w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-2 py-1"
+                      className="cockpit-input w-full py-1 text-xs"
                     >
                       {TTL_OPTIONS.map((opt) => (
                         <option key={opt.days} value={String(opt.days)}>

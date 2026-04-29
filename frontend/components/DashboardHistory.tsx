@@ -131,7 +131,7 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 flex flex-col">
+    <div className="cockpit-panel flex flex-col p-4">
       <div className="flex items-baseline justify-between mb-2">
         <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
           {title}

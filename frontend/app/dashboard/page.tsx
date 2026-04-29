@@ -1,6 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
 
 import { AppHeader } from "@/components/AppHeader";
 import { DashboardHistory } from "@/components/DashboardHistory";
@@ -71,6 +80,8 @@ export default function DashboardPage() {
   const [busyModel, setBusyModel] = useState<string | null>(null);
   const [perfRun, setPerfRun] = useState<PerfRunState | null>(null);
   const [perfTick, setPerfTick] = useState(Date.now());
+  const [placementError, setPlacementError] = useState<string | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   // UC-03 — top-level Live / History tab. The Live SSE stream still
   // runs in the background regardless of which tab is shown so
   // switching back to Live is instant.
@@ -123,19 +134,43 @@ export default function DashboardPage() {
   }, []);
 
   async function onPlacementChange(model: string, placement: string) {
+    const previous = snapshot;
     setBusyModel(model);
+    setPlacementError(null);
+    setSnapshot((prev) =>
+      prev
+        ? {
+            ...prev,
+            models: prev.models.map((m) =>
+              m.name === model ? { ...m, config: { ...m.config, placement } } : m,
+            ),
+          }
+        : prev,
+    );
     try {
       await api(`/api/admin/ollama/models/${encodeURIComponent(model)}/place`, {
         method: "POST",
         body: JSON.stringify({ placement }),
       });
     } catch (e) {
+      setSnapshot(previous);
       if (e instanceof ApiError) {
-        alert(`Place failed: ${e.status}\n${JSON.stringify(e.detail)}`);
+        setPlacementError(`Place failed: HTTP ${e.status}`);
+      } else {
+        setPlacementError("Place failed.");
       }
     } finally {
       setBusyModel(null);
     }
+  }
+
+  function onPlacementDragEnd(event: DragEndEvent) {
+    const model = String(event.active.id);
+    const placement = event.over ? String(event.over.id) : null;
+    if (!placement || !snapshot?.columns.includes(placement)) return;
+    const current = snapshot.models.find((m) => m.name === model)?.config?.placement ?? "available";
+    if (current === placement || busyModel === model || !isAdmin) return;
+    void onPlacementChange(model, placement);
   }
 
   async function onDelete(model: string) {
@@ -305,37 +340,59 @@ export default function DashboardPage() {
   return (
     <>
       <AppHeader />
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-4 space-y-4">
-        <div className="flex items-center gap-2">
+      <main className="cockpit-page flex-1 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight text-neutral-950 dark:text-white">
+              Operations
+            </h1>
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              Live Ollama state, GPU pressure, and model placement.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-1">
           <button
             onClick={() => setTab("live")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium border ${
+            className={`px-3 py-1.5 rounded-md text-sm font-medium ${
               tab === "live"
-                ? "bg-neutral-900 text-white border-neutral-900 dark:bg-neutral-100 dark:text-neutral-900 dark:border-neutral-100"
-                : "bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                ? "bg-neutral-950 text-white dark:bg-white dark:text-neutral-950"
+                : "text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             }`}
           >
             Live
           </button>
           <button
             onClick={() => setTab("history")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium border ${
+            className={`px-3 py-1.5 rounded-md text-sm font-medium ${
               tab === "history"
-                ? "bg-neutral-900 text-white border-neutral-900 dark:bg-neutral-100 dark:text-neutral-900 dark:border-neutral-100"
-                : "bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                ? "bg-neutral-950 text-white dark:bg-white dark:text-neutral-950"
+                : "text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             }`}
           >
             History
           </button>
+          </div>
         </div>
 
         {tab === "live" ? (
           <>
-            <div className="flex items-center gap-3 flex-wrap">
-              <StatusPill status={snapshot.status} />
-              <div className="flex flex-wrap gap-2">
+            <section className="cockpit-panel p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <StatusPill status={snapshot.status} />
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                    Snapshot {new Date(snapshot.ts).toLocaleTimeString()}
+                  </span>
+                </div>
+                {placementError ? (
+                  <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
+                    {placementError}
+                  </div>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
                 {snapshot.gpus.length === 0 ? (
-                  <span className="text-sm text-neutral-500">
+                  <span className="text-sm text-neutral-500 dark:text-neutral-400">
                     No GPU telemetry detected (Mac / CPU-only / nvidia-smi missing).
                   </span>
                 ) : (
@@ -344,23 +401,25 @@ export default function DashboardPage() {
                   ))
                 )}
               </div>
-            </div>
-
-            <section className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
-              {snapshot.columns.map((col) => (
-                <ColumnView
-                  key={col}
-                  col={col}
-                  models={buckets.get(col) ?? []}
-                  columns={snapshot.columns}
-                  isAdmin={!!isAdmin}
-                  busyModel={busyModel}
-                  onPlacementChange={onPlacementChange}
-                  onDelete={onDelete}
-                  onPerfTest={onPerfTest}
-                />
-              ))}
             </section>
+
+            <DndContext sensors={sensors} onDragEnd={onPlacementDragEnd}>
+              <section className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
+                {snapshot.columns.map((col) => (
+                  <ColumnView
+                    key={col}
+                    col={col}
+                    models={buckets.get(col) ?? []}
+                    columns={snapshot.columns}
+                    isAdmin={!!isAdmin}
+                    busyModel={busyModel}
+                    onPlacementChange={onPlacementChange}
+                    onDelete={onDelete}
+                    onPerfTest={onPerfTest}
+                  />
+                ))}
+              </section>
+            </DndContext>
           </>
         ) : (
           <DashboardHistory />
@@ -412,27 +471,37 @@ function GpuStripItem({
   const tempStatus = gpuTempStatus(g.temp_c);
   const wattsCls = wattsColor(g.power_w, g.max_power_w ?? DEFAULT_TDP_W);
   return (
-    <div className="rounded-md border border-neutral-200 dark:border-neutral-800 px-3 py-2 text-sm bg-white dark:bg-neutral-900 min-w-[220px]">
-      <div className="font-semibold">GPU {g.index}</div>
-      <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
-        {usedGb.toFixed(1)} / {totalGb.toFixed(1)} GB VRAM
-      </div>
-      {g.temp_c != null && tempStatus ? (
-        <div className="mt-1 flex items-center gap-2 text-xs">
-          <span className="font-mono text-neutral-700 dark:text-neutral-300">
-            {Math.round(g.temp_c)}°C
-          </span>
+    <div className="rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="font-semibold">GPU {g.index}</div>
+        {tempStatus ? (
           <span
             className={`px-1.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${tempStatus.cls}`}
             title="RTX 3090 thresholds: ≤70 Good · 71–82 Workload · 83–89 Throttling · ≥90 Critical"
           >
             {tempStatus.label}
           </span>
-        </div>
-      ) : null}
-      {g.power_w != null ? (
-        <div className={`text-xs font-mono mt-1 ${wattsCls}`}>
-          {g.power_w.toFixed(0)} W / {g.max_power_w ?? DEFAULT_TDP_W} W
+        ) : null}
+      </div>
+      <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-1">
+        {usedGb.toFixed(1)} / {totalGb.toFixed(1)} GB VRAM
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+        <div
+          className="h-full rounded-full bg-emerald-500"
+          style={{ width: `${Math.min(100, (usedGb / Math.max(totalGb, 1)) * 100)}%` }}
+        />
+      </div>
+      {g.temp_c != null ? (
+        <div className="mt-2 flex items-center gap-2 text-xs">
+          <span className="font-mono text-neutral-700 dark:text-neutral-300">
+            {Math.round(g.temp_c)}°C
+          </span>
+          {g.power_w != null ? (
+            <span className={`font-mono ${wattsCls}`}>
+              {g.power_w.toFixed(0)} W / {g.max_power_w ?? DEFAULT_TDP_W} W
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -450,21 +519,32 @@ function ColumnView(props: {
   onPerfTest: (model: string) => void;
 }) {
   const { col, models, columns, isAdmin, busyModel } = props;
+  const { isOver, setNodeRef } = useDroppable({ id: col, disabled: !isAdmin });
   const label = COLUMN_LABELS[col] ?? col.toUpperCase();
   const warm = WARM_COLUMNS.has(col);
   return (
     <section
-      className={`rounded-md border p-2 ${
-        warm
-          ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-950/20"
-          : "border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900"
+      ref={setNodeRef}
+      className={`min-h-64 rounded-md border p-2 ${
+        isOver
+          ? "border-sky-400 bg-sky-50 dark:border-sky-500 dark:bg-sky-950/40"
+          : warm
+            ? "border-emerald-200 dark:border-emerald-900 bg-emerald-50/45 dark:bg-emerald-950/20"
+            : "border-[var(--cockpit-border)] bg-[var(--cockpit-surface)]"
       }`}
     >
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400 mb-2">
-        {label}
-      </h2>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-xs font-semibold uppercase text-neutral-600 dark:text-neutral-400">
+          {label}
+        </h2>
+        <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-mono text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+          {models.length}
+        </span>
+      </div>
       {models.length === 0 ? (
-        <p className="text-xs text-neutral-400 italic">empty</p>
+        <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-neutral-300 text-xs text-neutral-400 dark:border-neutral-700">
+          Empty
+        </div>
       ) : (
         <ul className="space-y-2">
           {models.map((m) => (
@@ -503,12 +583,45 @@ function ModelCardView({
   onPerfTest: () => void;
 }) {
   const placement = m.config?.placement ?? "available";
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: m.name,
+    disabled: !isAdmin || busy,
+  });
+  const dragStyle = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+        zIndex: 30,
+      }
+    : undefined;
   return (
-    <li className="rounded border border-neutral-200 dark:border-neutral-800 p-2 text-sm bg-white dark:bg-neutral-950">
-      <div className="font-semibold break-all">{m.name}</div>
-      <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
-        tag: {m.tag ?? "—"} · {fmtBytes(m.size_bytes)} ·{" "}
-        {m.actual.loaded ? "loaded" : "idle"}
+    <li
+      ref={setNodeRef}
+      style={dragStyle}
+      className={`rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-3 text-sm shadow-sm ${
+        isDragging ? "opacity-80 shadow-lg" : ""
+      } ${busy ? "opacity-70" : ""}`}
+    >
+      <div className="flex items-start gap-2">
+        {isAdmin ? (
+          <button
+            type="button"
+            aria-label={`Drag ${m.name}`}
+            title="Drag to place"
+            disabled={busy}
+            className="mt-0.5 flex h-6 w-6 flex-shrink-0 cursor-grab items-center justify-center rounded border border-neutral-200 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 active:cursor-grabbing disabled:cursor-not-allowed dark:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            {...listeners}
+            {...attributes}
+          >
+            ::
+          </button>
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <div className="font-semibold break-all leading-snug">{m.name}</div>
+          <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
+            tag: {m.tag ?? "—"} · {fmtBytes(m.size_bytes)} ·{" "}
+            {m.actual.loaded ? "loaded" : "idle"}
+          </div>
+        </div>
       </div>
       {/* Sprint 5b — show the configured context window so admins see the
           VRAM budget at a glance. Falls back to "—" when no model_config
@@ -522,10 +635,16 @@ function ModelCardView({
         </div>
       ) : null}
       {m.metrics ? (
-        <div className="text-xs font-mono text-neutral-600 dark:text-neutral-400 mt-1">
-          ⏱ cold {m.metrics.cold_load_seconds?.toFixed(1) ?? "—"} s · ⚡{" "}
-          {m.metrics.throughput_tps?.toFixed(1) ?? "—"} tps ·{" "}
-          {m.metrics.max_ctx_observed ?? "?"} ctx
+        <div className="mt-2 grid grid-cols-3 gap-1 text-xs font-mono">
+          <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
+            {m.metrics.cold_load_seconds?.toFixed(1) ?? "—"}s
+          </div>
+          <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
+            {m.metrics.throughput_tps?.toFixed(1) ?? "—"}tps
+          </div>
+          <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
+            {m.metrics.max_ctx_observed ?? "?"} ctx
+          </div>
         </div>
       ) : (
         <div className="text-xs text-neutral-500 italic mt-1">
@@ -533,9 +652,9 @@ function ModelCardView({
         </div>
       )}
       {isAdmin ? (
-        <div className="flex flex-wrap gap-1 mt-2">
+        <div className="flex flex-wrap gap-1.5 mt-3">
           <select
-            className="text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-transparent px-1 py-0.5"
+            className="cockpit-input min-h-7 text-xs"
             value={placement}
             disabled={busy}
             onChange={(e) => onPlacementChange(e.target.value)}
@@ -550,15 +669,15 @@ function ModelCardView({
             type="button"
             disabled={busy}
             onClick={onPerfTest}
-            className="text-xs rounded border border-neutral-300 dark:border-neutral-700 px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            className="cockpit-button min-h-7 px-2 py-1 text-xs"
           >
-            Test performance
+            Perf
           </button>
           <button
             type="button"
             disabled={busy}
             onClick={onDelete}
-            className="text-xs rounded border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 px-2 py-0.5 hover:bg-rose-50 dark:hover:bg-rose-950"
+            className="cockpit-button min-h-7 border-rose-300 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950"
           >
             Delete
           </button>
@@ -604,8 +723,8 @@ function PerfDrawer({
   const stalled = running && secondsSinceEvent >= 2;
   const stageLabel = PERF_STAGE_LABELS[run.stage] ?? run.stage.replace(/_/g, " ");
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex justify-end">
-      <aside className="h-full w-full max-w-xl bg-white dark:bg-neutral-950 shadow-2xl border-l border-neutral-200 dark:border-neutral-800 p-5 overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm">
+      <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-5 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">Performance test</h2>
@@ -616,13 +735,13 @@ function PerfDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="text-sm text-neutral-600 hover:text-neutral-900 dark:hover:text-neutral-100"
+            className="cockpit-button"
           >
             Close
           </button>
         </div>
 
-        <div className="mt-5 rounded-md border border-neutral-200 dark:border-neutral-800 p-4 space-y-4">
+        <div className="cockpit-panel mt-5 p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <span
               className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold uppercase ${
@@ -724,7 +843,7 @@ function PerfDrawer({
               <button
                 type="button"
                 onClick={onRunAgain}
-                className="rounded-md border border-neutral-300 dark:border-neutral-700 px-3 py-1.5 text-sm font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                className="cockpit-button"
               >
                 Run again
               </button>
@@ -738,7 +857,7 @@ function PerfDrawer({
 
 function MetricTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-2">
+    <div className="rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-2">
       <div className="text-[11px] uppercase font-semibold text-neutral-500">{label}</div>
       <div className="font-mono text-sm mt-1">{value}</div>
     </div>

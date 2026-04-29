@@ -3,6 +3,31 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.0] — 2026-04-30 — UI refresh and interaction polish (UC-12)
+
+Minor-version bump for Sprint 11. UC-12 starts the release-quality UI pass
+before the public PyPI `v1.0.0` sprint.
+
+### Added — Frontend
+
+- Introduced shared cockpit UI tokens and reusable utility classes for
+  panels, buttons, inputs, tables, focus states, and page spacing.
+- Reworked the app header into a steadier shell with responsive navigation,
+  theme toggle, and account/session controls.
+- Reworked the dashboard live view with GPU cards, placement columns,
+  polished model cards, pending/error placement feedback, and a visually
+  integrated perf-test drawer.
+- Restored drag-and-drop model placement on the dashboard using the existing
+  `@dnd-kit/core` dependency while preserving the per-card select fallback for
+  keyboard and touch users.
+- Brought chat, code, admin users, admin Ollama, login, change-password, and
+  dashboard history surfaces onto the same visual system.
+
+### Tests
+
+- Frontend TypeScript check passes with `npx tsc --noEmit`.
+- Frontend production build passes with `npm run build`.
+
 ## [v0.4.0] — 2026-04-29 — Perf-test progress UI (UC-02 v1.1)
 
 Minor-version bump for the UC-02 v1.1 amendment. The dashboard perf-test
