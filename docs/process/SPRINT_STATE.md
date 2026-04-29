@@ -41,7 +41,7 @@
 
 | Tag | Date | Sprint | What shipped |
 |---|---|---|---|
-| `v0.4.0` | 2026-04-29 | 10 | UC-02 v1.1 perf-test progress UI: SSE progress/heartbeat/cancel/error protocol, cancel route, progress drawer with live tokens/s and stalled detection. BUG-GPU1 diagnose-only LL-001 accepted: single-daemon Ollama placement is best-effort on Neuroforge. PR #17 → pending merge/tag at acceptance time. |
+| `v0.4.0` | 2026-04-29 | 10 | UC-02 v1.1 perf-test progress UI: SSE progress/heartbeat/cancel/error protocol, cancel route, progress drawer with live tokens/s and stalled detection. BUG-GPU1 diagnose-only LL-001 accepted: single-daemon Ollama placement is best-effort on Neuroforge. PR #17 → `0e012d6`. |
 | `v0.3.1` | 2026-04-28 | 9 | UC-10 admin Ollama config page (`/admin/ollama` four panels: tags, defaults, metrics, audit log + CSV export). 431 tests green. PR #16 → 210c2f4. |
 | `v0.3.0` | 2026-04-28 | 8 | UC-03 dashboard history (`/dashboard` Live/History tabs, 24h/7d, 4 chart cards). Migration `0005_history.py`. Aggregators every 60 s / 3600 s. Recharts dep. PR #15 → 5ba134f. |
 | `v0.2.1` | 2026-04-28 | 7 | Auth UX + session control: optimistic chat bubble, AppHeader user menu (change-pw + session-TTL dropdown), `session_ttl_days`, `token_version` + revoke-sessions, `is_active` + deactivate/reactivate (last-active-admin guard). Migration `0004_auth_ux.py`. 365 tests green. PR #14 → 424a7c7. |
