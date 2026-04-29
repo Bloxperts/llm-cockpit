@@ -1,7 +1,7 @@
-<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-28 -->
+<!-- Status: Accepted | Version: 0.1 | Created: 2026-04-26 | Updated: 2026-04-27 -->
 # UC-03 · Functional Spec — Dashboard historical view
 
-**Status:** Done (technical)
+**Status:** Accepted
 **Depends on:** UC-02 (live dashboard, shares the metrics tables).
 **User Spec:** [`../../use-cases/UC-03-dashboard-history.md`](../../use-cases/UC-03-dashboard-history.md)
 **Test Spec:** [`../test/UC-03-dashboard-history.md`](../test/UC-03-dashboard-history.md)

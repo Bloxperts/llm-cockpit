@@ -1,10 +1,7 @@
-<!-- Status: Done (technical) | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-28 -->
+<!-- Status: Accepted | Version: 0.2 | Created: 2026-04-26 | Updated: 2026-04-27 -->
 # UC-07 · Functional Spec — Ollama integration (`LLMChat` port)
 
-**Status:** Done (technical)
-<!-- VAULT-SYNC: status flipped Accepted → In Progress → Done (technical) on develop in this slice; please mirror in the vault and re-sync /docs at sprint review. User Acceptance pending Chris's sprint-review sign-off. -->
-
-
+**Status:** Accepted
 **Depends on:** ADR-003 §4 (drops the scheduler), ADR-002 v1.1 (pip-distributable shape).
 **User Spec:** [`../../use-cases/UC-07-scheduler-routing.md`](../../use-cases/UC-07-scheduler-routing.md)
 **Test Spec:** [`../test/UC-07-scheduler-routing.md`](../test/UC-07-scheduler-routing.md)

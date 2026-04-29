@@ -3,9 +3,9 @@
 
 | Field | Value |
 |---|---|
-| Source | `/sessions/elegant-optimistic-cori/mnt/obsidian-vault/020 Projects/LLM-Cockpit` |
-| Synced at (UTC) | 2026-04-27T08:41:50Z |
-| Synced by | elegant-optimistic-cori@claude |
+| Source | `/Volumes/obsidian-vault/020 Projects/LLM-Cockpit` |
+| Synced at (UTC) | 2026-04-29T13:45:29Z |
+| Synced by | chris.unger@Outpost.local |
 | Source HEAD (vault is not git, so this stays empty) | — |
 
 The vault is the source of truth (DP-024). Don't edit anything in the synced subdirectories directly.

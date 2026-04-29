@@ -1,17 +1,7 @@
-<!-- Status: Live | Updated: 2026-04-28 -->
+<!-- Status: Live | Updated: 2026-04-27 -->
 # LLM Cockpit — Sprint State
 
 **Live document.** Updated at every sprint planning, every spec status transition, and every sprint review.
-
-<!-- VAULT-SYNC: this file is significantly stale relative to develop. The
-vault should be re-synced at the next sprint review to capture: Sprint 2
-closed (UC-01, UC-07, UC-08 part A+B, UC-09 all merged + User-Accepted),
-Sprint 3 closed (UC-02 merged + User-Accepted), Sprint 4 closed (UC-04 +
-UC-05 + Next.js frontend + v0.1.0a2 release), the v0.1.1 hotfix
-(SQLite WAL + embedding-model perf), and Sprint 5 *in progress*: UI-layer
-chat/code refinements (copy/download/scroll/think/tokens/timer/visual
-polish) tracked under the existing Accepted UC-04 + UC-05 functional specs
-— no new ports, tables, or use cases. Tagged release v0.1.2. -->
 
 ---
 
@@ -23,12 +13,13 @@ polish) tracked under the existing Accepted UC-04 + UC-05 functional specs
 
 ### Sprint 2 backlog
 
-| UC | Title | Functional Spec | Plan |
-|----|-------|-----------------|------|
-| UC-08 | First-run installation + bootstrap | Accepted | Build pip wheel layout (cli.py, main.py, alembic), implement `cockpit-admin {init, serve, doctor, migrate}`, wire bind-interface prompt, seed admin, snapshot model tags. |
-| UC-07 | Ollama integration (`LLMChat` port) | Accepted | Build the port + `OllamaLLMChat` adapter + `FakeLLMChat`. UC-08's probe consumes `list_models()` only; the rest of the surface lands as Sprint 4 needs it. |
-| UC-09 | First-login forced password change | Accepted | Build `current_user_must_be_settled` dependency, `POST /api/auth/change-password`, validation rules, frontend `/change-password` page. |
-| UC-01 | User logs in | Accepted | Build `routers/auth.py`, JWT issuance + cookie, `current_user` dep, `require_role`, login audit. Role-aware redirect. |
+| UC | Title | Functional Spec | Plan | Status |
+|----|-------|-----------------|------|--------|
+| UC-08 part A | Installer skeleton: cli, alembic, init/migrate/doctor | Accepted | Pip wheel layout, alembic 0001 (six tables), `cockpit-admin {init, migrate, doctor}`, bind-interface prompt, admin seed, model-tag heuristic. | **Done (technical)** — PR #1 merged 2026-04-27 (squash 98e2d1f). 44 tests green. UC-08 part B (serve + frontend bundle + full doctor) deferred to slice E. |
+| UC-07 | Ollama integration (`LLMChat` port) | Accepted | Build the port + `OllamaLLMChat` adapter + `FakeLLMChat`. UC-08's probe consumes `list_models()` only; the rest of the surface lands as Sprint 4 needs it. | Next |
+| UC-09 | First-login forced password change | Accepted | Build `current_user_must_be_settled` dependency, `POST /api/auth/change-password`, validation rules, frontend `/change-password` page. | Pending |
+| UC-01 | User logs in | Accepted | Build `routers/auth.py`, JWT issuance + cookie, `current_user` dep, `require_role`, login audit. Role-aware redirect. | Pending |
+| UC-08 part B | `serve`, frontend bundle, full doctor | Accepted | Slice E: `cockpit-admin serve` real body, Next.js static export bundled into wheel, `StaticFiles` mount, full doctor (frontend assets + nvidia-smi as hard checks), empty `/dashboard` placeholder. | Pending |
 
 End-of-sprint review on 2026-05-04 (Mon).
 
@@ -113,3 +104,6 @@ Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learne
 | 2026-04-27 | UC-01, UC-07, UC-08, UC-09 test specs | Review | Accepted | Chris |
 | 2026-04-27 | Sprint 1 | Open | Closed | Chris |
 | 2026-04-28 | Sprint 2 | — | Open | Chris |
+| 2026-04-27 | UC-08 part A (Functional Spec) | Accepted | In Progress | Claude Code (PR #1 opened) |
+| 2026-04-27 | UC-08 part A | In Progress | Done (technical) | Claude (review approved + merged) |
+| 2026-04-27 | UC-07 | Accepted | In Progress | (Sprint 2 Slice B starting) |
