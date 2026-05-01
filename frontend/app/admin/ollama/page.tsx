@@ -107,10 +107,15 @@ export default function AdminOllamaPage() {
   return (
     <>
       <AppHeader />
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-4 space-y-3">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          Ollama configuration
-        </h1>
+      <main className="cockpit-page flex-1 space-y-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+            Ollama configuration
+          </h1>
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            Model tags, defaults, metrics, and audit trail.
+          </p>
+        </div>
 
         <Panel summary="Model tags" defaultOpen>
           <ModelTagsPanel />
@@ -141,13 +146,13 @@ function Panel({
   return (
     <details
       open={defaultOpen}
-      className="bg-white dark:bg-neutral-900 rounded-xl border border-neutral-200 dark:border-neutral-800 group"
+      className="cockpit-panel group"
     >
       <summary className="px-4 py-3 cursor-pointer select-none font-semibold text-sm text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
         <span className="inline-block w-3 transition group-open:rotate-90">▶</span>
         {summary}
       </summary>
-      <div className="px-4 pb-4 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+      <div className="px-4 pb-4 pt-2 border-t border-[var(--cockpit-border)]">
         {children}
       </div>
     </details>

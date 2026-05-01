@@ -90,7 +90,10 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
   const [streaming, setStreaming] = useState(false);
   const [draft, setDraft] = useState("");
   const [streamingContent, setStreamingContent] = useState("");
-  const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(`cockpit_thinking_${mode}`) === "1";
+  });
 
   // Features 6 + 7 — timers.
   const [sendStart, setSendStart] = useState<number | null>(null);
@@ -122,13 +125,6 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-
-  // Restore thinking toggle from localStorage on mount.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(thinkingStorageKey);
-    if (stored === "1") setThinkingEnabled(true);
-  }, [thinkingStorageKey]);
 
   function toggleThinking() {
     setThinkingEnabled((prev) => {
@@ -347,14 +343,14 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
         : "bg-neutral-400 dark:bg-neutral-500";
 
   return (
-    <main className="flex-1 flex overflow-hidden">
+    <main className="flex flex-1 flex-col overflow-hidden bg-[var(--background)] md:flex-row">
       {/* Sidebar */}
-      <aside className="w-64 flex-shrink-0 bg-neutral-900 text-neutral-100 overflow-y-auto flex flex-col">
+      <aside className="flex max-h-56 w-full flex-shrink-0 flex-col overflow-y-auto border-b border-[var(--cockpit-border)] bg-neutral-950 text-neutral-100 md:max-h-none md:w-72 md:border-b-0 md:border-r">
         <div className="p-3">
           <button
             type="button"
             onClick={newConversation}
-            className="w-full text-left px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm font-medium transition"
+            className="w-full rounded-md bg-white px-3 py-2 text-left text-sm font-semibold text-neutral-950 hover:bg-neutral-200"
           >
             + New conversation
           </button>
@@ -367,8 +363,8 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                 onClick={() => selectConversation(c.id)}
                 className={`w-full text-left px-3 py-2 rounded-md text-sm transition ${
                   selected?.id === c.id
-                    ? "bg-neutral-700"
-                    : "hover:bg-neutral-800"
+                    ? "bg-neutral-800 ring-1 ring-neutral-700"
+                    : "hover:bg-neutral-900"
                 }`}
               >
                 <div className="font-medium truncate">
@@ -388,18 +384,18 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
       </aside>
 
       {/* Main pane */}
-      <section className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-neutral-950 relative">
+      <section className="relative flex flex-1 flex-col overflow-hidden bg-[var(--cockpit-surface)]">
         {selected ? (
           <>
             {/* Header */}
-            <div className="px-4 py-2 flex items-center gap-3 text-sm border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950">
+            <div className="flex flex-wrap items-center gap-3 border-b border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] px-4 py-3 text-sm">
               <span className="font-medium text-neutral-900 dark:text-neutral-100 truncate max-w-xs">
                 {selected.title ?? `Conversation #${selected.id}`}
               </span>
               <select
                 value={selected.model ?? ""}
                 onChange={(e) => patchModel(e.target.value)}
-                className="text-xs rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-neutral-700 dark:text-neutral-200"
+                className="cockpit-input text-xs"
               >
                 {models.map((m) => (
                   <option key={m.name} value={m.name}>
@@ -415,7 +411,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
               <button
                 type="button"
                 onClick={() => deleteConversation(selected.id)}
-                className="ml-auto text-xs rounded-md border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-400 px-2 py-1 hover:bg-rose-50 dark:hover:bg-rose-950 transition"
+                className="cockpit-button ml-auto border-rose-300 text-xs text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
               >
                 Delete
               </button>
@@ -424,9 +420,9 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
             {/* Message list */}
             <div
               ref={messagesScrollRef}
-              className="flex-1 overflow-y-auto px-6 py-8"
+              className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8"
             >
-              <div className="max-w-3xl mx-auto w-full flex flex-col gap-6">
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
                 {selected.messages.map((m, idx) => {
                   const isLast = idx === selected.messages.length - 1;
                   return (
@@ -456,7 +452,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                     <button
                       type="button"
                       onClick={regenerate}
-                      className="text-xs rounded-md border border-neutral-300 dark:border-neutral-700 px-3 py-1 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
+                      className="cockpit-button text-xs"
                     >
                       Regenerate
                     </button>
@@ -474,21 +470,21 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                   messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
                 }
                 aria-label="Scroll to latest"
-                className="absolute right-6 bottom-44 z-10 rounded-full bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 shadow-lg p-2 hover:opacity-90 transition"
+                className="absolute right-6 bottom-44 z-10 rounded-full bg-neutral-900 p-2 text-white shadow-lg hover:opacity-90 dark:bg-white dark:text-neutral-900"
               >
                 <ArrowDownIcon />
               </button>
             ) : null}
 
             {/* Compose */}
-            <div className="border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-4 py-3">
+            <div className="border-t border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] px-4 py-3">
               <div className="max-w-3xl mx-auto w-full">
                 {/* Thinking toggle (left) + live timer (right) */}
                 <div className="flex items-center justify-between mb-2 text-xs">
                   <button
                     type="button"
                     onClick={toggleThinking}
-                    className={`px-2.5 py-1 rounded-full border transition ${
+                    className={`rounded-md border px-2.5 py-1 ${
                       thinkingEnabled
                         ? "border-amber-400 bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
                         : "border-neutral-300 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
@@ -504,7 +500,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                 </div>
 
                 {/* Compose box */}
-                <div className="rounded-2xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm p-2 flex items-end gap-2">
+                <div className="flex items-end gap-2 rounded-lg border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-2 shadow-sm">
                   <textarea
                     ref={composerRef}
                     className={`flex-1 resize-none bg-transparent border-0 outline-0 px-2 py-1 max-h-48 ${
@@ -531,7 +527,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                     onClick={sendMessage}
                     disabled={streaming || !draft.trim()}
                     aria-label={streaming ? "Streaming" : "Send"}
-                    className="rounded-full p-2 bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 disabled:opacity-40 hover:opacity-90 transition"
+                    className="rounded-md bg-neutral-900 p-2 text-white hover:opacity-90 disabled:opacity-40 dark:bg-white dark:text-neutral-900"
                   >
                     {streaming ? <LoadingIcon /> : <UpArrowIcon />}
                   </button>
@@ -553,8 +549,11 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-neutral-500 dark:text-neutral-400">
-            Select a conversation or start a new one.
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center text-neutral-500 dark:text-neutral-400">
+            <div>Select a conversation or start a new one.</div>
+            <button type="button" onClick={newConversation} className="cockpit-button cockpit-button-primary">
+              New conversation
+            </button>
           </div>
         )}
       </section>
