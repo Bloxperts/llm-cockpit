@@ -29,6 +29,8 @@ import { ApiError, api, streamSse } from "@/lib/api";
 import { hasAtLeast, useAuthStore } from "@/lib/auth-store";
 
 const DEFAULT_CTX = 8192;
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_BYTES = 200 * 1024;
 type ChatMode = "chat" | "code";
 
 interface ConversationSummary {
@@ -82,6 +84,14 @@ interface FileEntry {
   is_dir: boolean;
 }
 
+interface ComposerAttachment {
+  id: string;
+  name: string;
+  size: number;
+  type: string | null;
+  content: string;
+}
+
 export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode }) {
   const me = useAuthStore((s) => s.me);
   const canUseCode = me ? hasAtLeast(me.role, "code") : preferredMode === "code";
@@ -112,6 +122,9 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
     chat: "",
     code: "",
   });
+  const [attachmentsByMode, setAttachmentsByMode] = useState<
+    Record<ChatMode, ComposerAttachment[]>
+  >({ chat: [], code: [] });
   const [streamingContent, setStreamingContent] = useState("");
   const [thinkingByMode, setThinkingByMode] = useState<Record<ChatMode, boolean>>(() => {
     if (typeof window === "undefined") return { chat: false, code: false };
@@ -145,6 +158,7 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
   const conversations = conversationsByMode[activeMode];
   const models = modelsByMode[activeMode];
   const draft = draftByMode[activeMode];
+  const attachments = attachmentsByMode[activeMode];
   const thinkingEnabled = thinkingByMode[activeMode];
   const apiPrefix = `/api/${activeMode}`;
 
@@ -156,6 +170,7 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   function toggleThinking() {
     setThinkingByMode((prev) => {
@@ -295,11 +310,12 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
   }
 
   async function sendMessage() {
-    if (!selected || !draft.trim() || streaming) return;
-    const content = draft;
+    if (!selected || (!draft.trim() && attachments.length === 0) || streaming) return;
+    const content = buildMessageContent(draft, attachments);
     const targetMode = activeMode;
     const conversationId = selected.id;
     setDraftByMode((prev) => ({ ...prev, [targetMode]: "" }));
+    setAttachmentsByMode((prev) => ({ ...prev, [targetMode]: [] }));
     // Sprint 7 — optimistic UI: render the user's bubble immediately,
     // before the stream event arrives. The id=-1 sentinel is replaced
     // when the conversation reloads on the `done` event.
@@ -367,6 +383,48 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
 
   function updateDraft(value: string) {
     setDraftByMode((prev) => ({ ...prev, [activeMode]: value }));
+  }
+
+  async function attachFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    const existing = attachmentsByMode[activeMode];
+    const slots = Math.max(0, MAX_ATTACHMENTS - existing.length);
+    const picked = Array.from(fileList).slice(0, slots);
+    if (picked.length < fileList.length) {
+      alert(`Attach up to ${MAX_ATTACHMENTS} files per message.`);
+    }
+    const next: ComposerAttachment[] = [];
+    for (const file of picked) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        alert(`${file.name} is larger than ${formatBytes(MAX_ATTACHMENT_BYTES)}.`);
+        continue;
+      }
+      try {
+        next.push({
+          id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+          name: file.name,
+          size: file.size,
+          type: file.type || null,
+          content: await file.text(),
+        });
+      } catch (e) {
+        alert(`Could not read ${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (next.length > 0) {
+      setAttachmentsByMode((prev) => ({
+        ...prev,
+        [activeMode]: [...prev[activeMode], ...next],
+      }));
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removeAttachment(id: string) {
+    setAttachmentsByMode((prev) => ({
+      ...prev,
+      [activeMode]: prev[activeMode].filter((a) => a.id !== id),
+    }));
   }
 
   // Feature 5 — token math.
@@ -519,6 +577,24 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
                 </div>
 
                 <div className="flex items-end gap-2 rounded-lg border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-2 shadow-sm">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    accept="text/*,.css,.csv,.diff,.html,.js,.json,.jsx,.log,.md,.patch,.py,.sh,.sql,.toml,.ts,.tsx,.txt,.xml,.yaml,.yml"
+                    onChange={(e) => void attachFiles(e.target.files)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={streaming || attachments.length >= MAX_ATTACHMENTS}
+                    aria-label="Attach files"
+                    title="Attach files"
+                    className="mb-1 rounded-md border border-[var(--cockpit-border)] p-2 text-neutral-500 hover:bg-[var(--cockpit-surface-muted)] hover:text-neutral-900 disabled:opacity-40 dark:text-neutral-400 dark:hover:text-neutral-100"
+                  >
+                    <PaperclipIcon />
+                  </button>
                   <textarea
                     ref={composerRef}
                     className={`max-h-48 flex-1 resize-none border-0 bg-transparent px-2 py-1 outline-0 ${
@@ -543,13 +619,39 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
                   <button
                     type="button"
                     onClick={sendMessage}
-                    disabled={streaming || !draft.trim()}
+                    disabled={streaming || (!draft.trim() && attachments.length === 0)}
                     aria-label={streaming ? "Streaming" : "Send"}
                     className="rounded-md bg-neutral-900 p-2 text-white hover:opacity-90 disabled:opacity-40 dark:bg-white dark:text-neutral-900"
                   >
                     {streaming ? <LoadingIcon /> : <UpArrowIcon />}
                   </button>
                 </div>
+
+                {attachments.length > 0 ? (
+                  <ul className="mt-2 flex flex-wrap gap-2">
+                    {attachments.map((file) => (
+                      <li
+                        key={file.id}
+                        className="flex max-w-full items-center gap-2 rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface-muted)] px-2 py-1 text-xs text-neutral-700 dark:text-neutral-200"
+                      >
+                        <span className="truncate font-mono" title={file.name}>
+                          {file.name}
+                        </span>
+                        <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
+                          {formatBytes(file.size)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(file.id)}
+                          aria-label={`Remove ${file.name}`}
+                          className="shrink-0 rounded px-1 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                        >
+                          x
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
 
                 <div className="mt-2 flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
@@ -796,6 +898,39 @@ function LoadingIcon() {
       <path d="M21 12a9 9 0 1 1-6.22-8.56" />
     </svg>
   );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m21.44 11.05-8.49 8.49a6 6 0 0 1-8.49-8.49l8.49-8.49a4 4 0 0 1 5.66 5.66l-8.49 8.49a2 2 0 1 1-2.83-2.83l8.49-8.49" />
+    </svg>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function buildMessageContent(draft: string, attachments: ComposerAttachment[]): string {
+  const trimmed = draft.trim();
+  if (attachments.length === 0) return draft;
+  const parts = trimmed ? [trimmed] : [];
+  parts.push(
+    [
+      "Attached files:",
+      ...attachments.map((file) =>
+        [
+          `--- ${file.name} (${file.type ?? "text/plain"}, ${formatBytes(file.size)}) ---`,
+          file.content,
+          `--- end ${file.name} ---`,
+        ].join("\n"),
+      ),
+    ].join("\n\n"),
+  );
+  return parts.join("\n\n");
 }
 
 // Sprint 6 — workspace file drawer for the Code page sidebar.
