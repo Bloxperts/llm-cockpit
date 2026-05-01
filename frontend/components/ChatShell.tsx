@@ -125,6 +125,7 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
   const [attachmentsByMode, setAttachmentsByMode] = useState<
     Record<ChatMode, ComposerAttachment[]>
   >({ chat: [], code: [] });
+  const [draggingFiles, setDraggingFiles] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [thinkingByMode, setThinkingByMode] = useState<Record<ChatMode, boolean>>(() => {
     if (typeof window === "undefined") return { chat: false, code: false };
@@ -427,6 +428,27 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
     }));
   }
 
+  function onComposerDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (streaming || !hasDraggedFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setDraggingFiles(true);
+  }
+
+  function onComposerDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setDraggingFiles(false);
+    }
+  }
+
+  function onComposerDrop(e: React.DragEvent<HTMLDivElement>) {
+    if (!hasDraggedFiles(e)) return;
+    e.preventDefault();
+    setDraggingFiles(false);
+    if (streaming) return;
+    void attachFiles(e.dataTransfer.files);
+  }
+
   // Feature 5 — token math.
   const tokenLimit = selected?.num_ctx_default ?? DEFAULT_CTX;
   const persistedTokens = useMemo(() => {
@@ -576,7 +598,16 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
                   ) : null}
                 </div>
 
-                <div className="flex items-end gap-2 rounded-lg border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-2 shadow-sm">
+                <div
+                  onDragOver={onComposerDragOver}
+                  onDragLeave={onComposerDragLeave}
+                  onDrop={onComposerDrop}
+                  className={`relative flex items-end gap-2 rounded-lg border p-2 shadow-sm transition ${
+                    draggingFiles
+                      ? "border-neutral-900 bg-[var(--cockpit-surface-muted)] ring-2 ring-neutral-900/15 dark:border-white dark:ring-white/20"
+                      : "border-[var(--cockpit-border)] bg-[var(--cockpit-surface)]"
+                  }`}
+                >
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -595,6 +626,11 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
                   >
                     <PaperclipIcon />
                   </button>
+                  {draggingFiles ? (
+                    <div className="pointer-events-none absolute inset-1 flex items-center justify-center rounded-md border border-dashed border-neutral-400 bg-[color-mix(in_srgb,var(--cockpit-surface)_82%,transparent)] text-xs font-medium text-neutral-700 backdrop-blur-[1px] dark:border-neutral-600 dark:text-neutral-200">
+                      Drop files to attach
+                    </div>
+                  ) : null}
                   <textarea
                     ref={composerRef}
                     className={`max-h-48 flex-1 resize-none border-0 bg-transparent px-2 py-1 outline-0 ${
@@ -652,6 +688,17 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
                     ))}
                   </ul>
                 ) : null}
+
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  <span>
+                    Attach or drop up to {MAX_ATTACHMENTS} text files, {formatBytes(MAX_ATTACHMENT_BYTES)} each.
+                  </span>
+                  {attachments.length > 0 ? (
+                    <span className="font-mono">
+                      {attachments.length} / {MAX_ATTACHMENTS} attached
+                    </span>
+                  ) : null}
+                </div>
 
                 <div className="mt-2 flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
@@ -931,6 +978,10 @@ function buildMessageContent(draft: string, attachments: ComposerAttachment[]): 
     ].join("\n\n"),
   );
   return parts.join("\n\n");
+}
+
+function hasDraggedFiles(e: React.DragEvent<HTMLElement>): boolean {
+  return Array.from(e.dataTransfer.types).includes("Files");
 }
 
 // Sprint 6 — workspace file drawer for the Code page sidebar.
