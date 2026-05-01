@@ -3,6 +3,15 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.4] — 2026-05-02 — Cross GPU placement warning
+
+Patch release for the dashboard placement board.
+
+### Fixed — Frontend
+
+- Moving a model to Cross GPU now warns when currently warm single-GPU models
+  may be unloaded to make room, grouped by affected GPU.
+
 ## [v0.5.3] — 2026-05-01 — Performance test stream fix
 
 Patch release for the NeuroForge performance-test drawer.
