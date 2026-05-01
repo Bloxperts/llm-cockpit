@@ -36,6 +36,7 @@ export interface ModelMetricsPayload {
 export interface ModelCardPayload {
   name: string;
   tag: string | null;
+  tag_source: string | null;
   size_bytes: number;
   config: ModelConfigPayload;
   actual: ModelActualPayload;

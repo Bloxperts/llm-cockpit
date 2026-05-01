@@ -252,12 +252,8 @@ function ModelTagsPanel() {
           </thead>
           <tbody>
             {snapshot.models.map((m) => {
-              // The dashboard snapshot doesn't carry the tag yet — fall back
-              // to "—" until the backend extends the snapshot. The table
-              // still works as a "list of models with delete + future tag"
-              // surface.
-              const tag = (m.config as unknown as { tag?: TagValue })?.tag ?? "chat";
-              const source = (m.config as unknown as { source?: string })?.source ?? "auto";
+              const tag = (m.tag ?? "chat") as TagValue;
+              const source = m.tag_source ?? "auto";
               return (
                 <tr
                   key={m.name}
