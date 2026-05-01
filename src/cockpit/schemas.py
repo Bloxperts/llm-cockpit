@@ -60,6 +60,10 @@ class LogoutResponse(BaseModel):
     pass
 
 
+class AppVersionResponse(BaseModel):
+    version: str
+
+
 # --- UC-02: dashboard snapshot --------------------------------------------
 
 

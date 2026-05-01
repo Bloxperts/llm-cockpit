@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from cockpit import __version__
 from cockpit.adapters.fake_chat import FakeLLMChat, model_info
 from cockpit.config import Settings
 from cockpit.db import upgrade_to_head
@@ -44,6 +45,15 @@ def test_create_app_smoke(initialised_settings: Settings) -> None:
         r = client.get("/healthz")
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
+
+
+def test_api_version_returns_package_version(initialised_settings: Settings) -> None:
+    fake = FakeLLMChat(models=[])
+    app = create_app(initialised_settings, chat_factory=lambda url: fake)
+    with TestClient(app) as client:
+        r = client.get("/api/version")
+        assert r.status_code == 200
+        assert r.json() == {"version": __version__}
 
 
 def test_api_auth_me_without_cookie_returns_401(initialised_settings: Settings) -> None:
