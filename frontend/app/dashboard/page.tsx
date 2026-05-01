@@ -143,6 +143,13 @@ export default function DashboardPage() {
     extras: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null } = {},
   ) {
     const previous = snapshot;
+    const current = snapshot?.models.find((m) => m.name === model)?.config?.placement ?? "available";
+    if (snapshot && placement === "multi_gpu" && current !== "multi_gpu") {
+      const warning = crossGpuEvictionWarning(snapshot, model);
+      if (warning && !window.confirm(warning)) {
+        return;
+      }
+    }
     setBusyModel(model);
     setPlacementError(null);
     setSnapshot((prev) =>
@@ -599,6 +606,36 @@ function GpuStripItem({
       ) : null}
     </div>
   );
+}
+
+function crossGpuEvictionWarning(snapshot: DashboardSnapshot, movedModel: string): string | null {
+  const impacted = snapshot.models
+    .filter((m) => m.name !== movedModel)
+    .filter((m) => /^gpu\d+$/.test(m.config?.placement ?? ""))
+    .filter((m) => m.actual.loaded || m.config.keep_alive_mode !== "unload");
+  if (!impacted.length) return null;
+
+  const byGpu = new Map<string, string[]>();
+  for (const model of impacted) {
+    const placement = model.config?.placement ?? "unknown";
+    const label = COLUMN_LABELS[placement] ?? placement.toUpperCase();
+    const suffix = model.actual.loaded ? "" : " (configured warm)";
+    byGpu.set(label, [...(byGpu.get(label) ?? []), `${model.name}${suffix}`]);
+  }
+  const affected = Array.from(byGpu.entries())
+    .map(([gpu, names]) => `${gpu}: ${names.join(", ")}`)
+    .join("\n");
+
+  return [
+    `Move ${movedModel} to Cross GPU?`,
+    "",
+    "Cross GPU can reserve VRAM on every GPU. Ollama may unload currently warm single-GPU models to make room.",
+    "",
+    "Potentially affected:",
+    affected,
+    "",
+    "Continue?",
+  ].join("\n");
 }
 
 function ColumnView(props: {
