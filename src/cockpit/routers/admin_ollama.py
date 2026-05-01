@@ -115,8 +115,14 @@ def _allowed_placements(gpu_count: int) -> list[str]:
     cols: list[str] = [f"gpu{i}" for i in range(gpu_count)]
     if gpu_count >= 2:
         cols.append("multi_gpu")
-    cols.extend(["on_demand", "available"])
+    cols.append("on_demand")
     return cols
+
+
+def _normalize_placement(placement: str | None) -> str:
+    if placement in (None, "available"):
+        return "on_demand"
+    return placement
 
 
 def _resolve_keep_alive(
@@ -132,7 +138,7 @@ def _resolve_keep_alive(
         return 0
     if mode == "finite" and keep_alive_seconds is not None:
         return max(0, int(keep_alive_seconds))
-    if placement in ("on_demand", "available"):
+    if _normalize_placement(placement) == "on_demand":
         return PLACEMENT_KEEP_ALIVE_COLD_S
     return PLACEMENT_KEEP_ALIVE_WARM_S
 
@@ -151,8 +157,8 @@ def _options_for_placement(
     | gpu0..gpuN     | 24h        | int      | omitted |
     | multi_gpu      | 24h        | omitted  | 99      |
     | on_demand      | 0          | omitted  | omitted |
-    | available      | 0          | omitted  | omitted |
     """
+    placement = _normalize_placement(placement)
     keep_alive = _resolve_keep_alive(
         placement,
         keep_alive_mode=keep_alive_mode,
@@ -169,7 +175,7 @@ def _options_for_placement(
         if num_ctx_default is not None:
             options["num_ctx"] = num_ctx_default
         return options
-    # on_demand / available
+    # on_demand
     return {"keep_alive": PLACEMENT_KEEP_ALIVE_COLD_S}
 
 
@@ -285,13 +291,14 @@ def _upsert_model_config(
     num_ctx_default: int | None = None,
     num_ctx_default_provided: bool = False,
 ) -> ModelConfig:
+    placement = _normalize_placement(placement)
     cfg = session.query(ModelConfig).filter_by(model=model).first()
     if cfg is None:
         cfg = ModelConfig(model=model, placement=placement)
         session.add(cfg)
     else:
         cfg.placement = placement
-    if placement in ("on_demand", "available"):
+    if placement == "on_demand":
         cfg.keep_alive_mode = "unload"
     elif keep_alive_mode is not None:
         cfg.keep_alive_mode = keep_alive_mode
@@ -352,7 +359,8 @@ async def place_model(
 ) -> PlaceResponse:
     gpu_count = _detected_gpu_count(request)
     allowed = _allowed_placements(gpu_count)
-    if body.placement not in allowed:
+    placement = _normalize_placement(body.placement)
+    if placement not in allowed:
         raise HTTPException(
             422,
             detail={
@@ -364,21 +372,21 @@ async def place_model(
 
     _validate_keep_alive(body.keep_alive_mode, body.keep_alive_seconds)
     options = _options_for_placement(
-        body.placement,
+        placement,
         keep_alive_mode=body.keep_alive_mode,
         keep_alive_seconds=body.keep_alive_seconds,
         num_ctx_default=body.num_ctx_default,
     )
-    expected_main_gpu = _expected_main_gpu(body.placement)
-    should_be_loaded = _placement_should_be_loaded(body.placement)
+    expected_main_gpu = _expected_main_gpu(placement)
+    should_be_loaded = _placement_should_be_loaded(placement)
 
     # UPSERT first so observers see the desired state even if warm-up fails.
     cfg = db.query(ModelConfig).filter_by(model=model).first()
-    old_placement = cfg.placement if cfg is not None else None
+    old_placement = _normalize_placement(cfg.placement if cfg is not None else None)
     cfg = _upsert_model_config(
         db,
         model,
-        body.placement,
+        placement,
         keep_alive_mode=body.keep_alive_mode,
         keep_alive_seconds=body.keep_alive_seconds,
         num_ctx_default=body.num_ctx_default,
@@ -438,7 +446,7 @@ async def place_model(
         target_model=model,
         details={
             "old": old_placement,
-            "new": body.placement,
+            "new": placement,
             "applied": options,
             "mismatch": mismatch,
             "main_gpu_actual": main_gpu_actual,
@@ -510,27 +518,36 @@ async def pull_model(
                 }
                 return
 
-        # On success: ensure a default model_config row exists, write audit.
-        with session_factory() as session:
-            if succeeded:
-                existing = session.query(ModelConfig).filter_by(model=model).first()
-                if existing is None:
-                    session.add(ModelConfig(model=model, placement="available"))
-                    session.flush()
-                try:
-                    details = await chat.show_model(model)
-                    _upsert_metadata_from_details(session, model=model, details=details)
-                except (OllamaModelNotFound, OllamaUnreachableError, OllamaResponseError):
-                    pass
-            write_admin_audit(
-                session,
-                actor_id=actor_id,
-                action="model_pull",
-                target_model=model,
-                details={"status": last_status, "success": succeeded},
-                source_ip=source_ip,
-            )
-            session.commit()
+            # On success: ensure a default model_config row exists, refresh the
+            # cached Ollama list, and write audit while the adapter is still open.
+            with session_factory() as session:
+                if succeeded:
+                    existing = session.query(ModelConfig).filter_by(model=model).first()
+                    if existing is None:
+                        session.add(ModelConfig(model=model, placement="on_demand"))
+                        session.flush()
+                    elif existing.placement == "available":
+                        existing.placement = "on_demand"
+                        existing.keep_alive_mode = "unload"
+                        session.flush()
+                    try:
+                        details = await chat.show_model(model)
+                        _upsert_metadata_from_details(session, model=model, details=details)
+                    except (OllamaModelNotFound, OllamaUnreachableError, OllamaResponseError):
+                        pass
+                    try:
+                        request.app.state.model_state.available_models = await chat.list_models()
+                    except (OllamaUnreachableError, OllamaResponseError):
+                        pass
+                write_admin_audit(
+                    session,
+                    actor_id=actor_id,
+                    action="model_pull",
+                    target_model=model,
+                    details={"status": last_status, "success": succeeded},
+                    source_ip=source_ip,
+                )
+                session.commit()
         yield {
             "event": "done",
             "data": json.dumps({"success": succeeded, "status": last_status}),
@@ -593,7 +610,7 @@ async def patch_settings(
 ) -> dict:
     cfg = db.query(ModelConfig).filter_by(model=model).first()
     if cfg is None:
-        cfg = ModelConfig(model=model, placement="available")
+        cfg = ModelConfig(model=model, placement="on_demand")
         db.add(cfg)
     changes: dict[str, Any] = {}
     if body.keep_alive_mode is not None:

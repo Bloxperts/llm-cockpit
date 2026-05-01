@@ -3,6 +3,18 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.5] — 2026-05-02 — On Demand model loading
+
+Patch release for the dashboard placement model.
+
+### Changed — Dashboard
+
+- Removed the visible Available placement column. Unconfigured and legacy
+  `available` rows now appear in On Demand.
+- Added a Load model dialog on the dashboard with local On Demand search and
+  direct Ollama download by model name. Successful downloads are configured as
+  On Demand.
+
 ## [v0.5.4] — 2026-05-02 — Cross GPU placement warning
 
 Patch release for the dashboard placement board.

@@ -242,15 +242,21 @@ def _columns_for(gpu_count: int) -> list[str]:
     No GPU → no GPU columns and no Cross GPU column (nothing to span).
     1 GPU → gpu0 only (no Cross GPU; only one GPU).
     ≥ 2 GPUs → gpu0..gpuN + Cross GPU (`multi_gpu` on the wire).
-    Always: On Demand + Available.
+    Always: On Demand.
     """
     cols: list[str] = []
     cols.extend(f"gpu{i}" for i in range(gpu_count))
     if gpu_count >= 2:
         cols.append("multi_gpu")
     cols.append("on_demand")
-    cols.append("available")
     return cols
+
+
+def _dashboard_placement(placement: str | None) -> str:
+    """Collapse legacy/unconfigured rows into the visible cold bucket."""
+    if placement in (None, "available"):
+        return "on_demand"
+    return placement
 
 
 def _model_state_status(
@@ -433,7 +439,7 @@ def _build_model_card(
     metadata: ModelMetadata | None,
     gpus: list[GpuSnapshot],
 ) -> dict[str, Any]:
-    placement = config.placement if config is not None else "available"
+    placement = _dashboard_placement(config.placement if config is not None else None)
     config_payload = {
         "placement": placement,
         "keep_alive_mode": config.keep_alive_mode if config is not None else "default",
