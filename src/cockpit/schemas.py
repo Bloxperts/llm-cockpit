@@ -149,7 +149,7 @@ class DashboardSnapshot(BaseModel):
 
 
 class PlaceRequest(BaseModel):
-    placement: str  # 'gpuN' | 'multi_gpu' | 'on_demand' | 'available'
+    placement: str  # 'gpuN' | 'multi_gpu' | 'on_demand' ('available' accepted as legacy alias)
     keep_alive_mode: str | None = None
     keep_alive_seconds: int | None = None
     num_ctx_default: int | None = None

@@ -228,11 +228,11 @@ async def test_model_state_sampler_records_error_on_unreachable() -> None:
 @pytest.mark.parametrize(
     "gpu_count,expected",
     [
-        (0, ["on_demand", "available"]),
-        (1, ["gpu0", "on_demand", "available"]),
-        (2, ["gpu0", "gpu1", "multi_gpu", "on_demand", "available"]),
-        (3, ["gpu0", "gpu1", "gpu2", "multi_gpu", "on_demand", "available"]),
-        (5, ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "multi_gpu", "on_demand", "available"]),
+        (0, ["on_demand"]),
+        (1, ["gpu0", "on_demand"]),
+        (2, ["gpu0", "gpu1", "multi_gpu", "on_demand"]),
+        (3, ["gpu0", "gpu1", "gpu2", "multi_gpu", "on_demand"]),
+        (5, ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "multi_gpu", "on_demand"]),
     ],
 )
 def test_columns_for_various_gpu_counts(gpu_count: int, expected: list[str]) -> None:
@@ -363,7 +363,7 @@ def test_dashboard_no_gpu_collapses_columns(settings: Settings, seeded_users: di
     assert r.status_code == 200
     snap = DashboardSnapshot.model_validate(r.json())
     assert snap.gpus == []
-    assert snap.columns == ["on_demand", "available"]
+    assert snap.columns == ["on_demand"]
 
 
 def test_dashboard_stream_endpoint_exists_and_requires_auth(
@@ -822,7 +822,7 @@ def test_pull_model_streams_and_creates_default_config(settings: Settings, seede
     try:
         with factory() as session:
             cfg = session.query(ModelConfig).filter_by(model="new-model").one()
-            assert cfg.placement == "available"
+            assert cfg.placement == "on_demand"
             audits = list(
                 session.execute(select(AdminAudit).where(AdminAudit.action == "model_pull")).scalars()
             )
@@ -1356,8 +1356,8 @@ def test_options_for_placement_table() -> None:
 def test_allowed_placements_no_gpu() -> None:
     from cockpit.routers.admin_ollama import _allowed_placements
 
-    assert _allowed_placements(0) == ["on_demand", "available"]
-    assert _allowed_placements(1) == ["gpu0", "on_demand", "available"]
+    assert _allowed_placements(0) == ["on_demand"]
+    assert _allowed_placements(1) == ["gpu0", "on_demand"]
 
 
 def test_ollama_show_parser_tolerates_model_metadata() -> None:

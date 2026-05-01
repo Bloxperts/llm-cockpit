@@ -1,6 +1,6 @@
 [project]
 name = "llm-cockpit"
-version = "0.5.4"
+version = "0.5.5"
 description = "Multi-user web cockpit for Ollama: dashboard + chat + admin, pip-installable in one process"
 readme = "README.md"
 requires-python = ">=3.12"
