@@ -1,2 +1,2 @@
 :HL["/_next/static/chunks/16japu-iv.~i~.css","style"]
-0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"code","param":null,"prefetchHints":0,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}}}},"staleTime":300,"buildId":"e17s02ddegSxG5dLzjR24"}
+0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"code","param":null,"prefetchHints":0,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}}}},"staleTime":300,"buildId":"TDf_ycNuV6cBLmGdb9qQ4"}

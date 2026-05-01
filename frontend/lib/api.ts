@@ -68,17 +68,28 @@ export async function* streamSse(
   if (!reader) return;
   const decoder = new TextDecoder();
   let buf = "";
+  const nextBlock = () => {
+    const lf = buf.indexOf("\n\n");
+    const crlf = buf.indexOf("\r\n\r\n");
+    if (lf === -1 && crlf === -1) return null;
+    if (crlf !== -1 && (lf === -1 || crlf < lf)) {
+      const block = buf.slice(0, crlf);
+      buf = buf.slice(crlf + 4);
+      return block;
+    }
+    const block = buf.slice(0, lf);
+    buf = buf.slice(lf + 2);
+    return block;
+  };
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
+    let block: string | null;
+    while ((block = nextBlock()) !== null) {
       let event = "message";
       let data = "";
-      for (const line of block.split("\n")) {
+      for (const line of block.replace(/\r\n/g, "\n").split("\n")) {
         if (line.startsWith("event:")) {
           const body = line.slice("event:".length);
           event = body.startsWith(" ") ? body.slice(1) : body;
