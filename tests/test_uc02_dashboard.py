@@ -1360,6 +1360,42 @@ def test_allowed_placements_no_gpu() -> None:
     assert _allowed_placements(1) == ["gpu0", "on_demand"]
 
 
+def test_parse_ollama_catalog_filters_installed_models() -> None:
+    from cockpit.adapters.ollama_catalog import parse_ollama_catalog
+
+    html = """
+    <ul>
+      <li x-test-model>
+        <a href="/library/qwen3">
+          <h2><span x-test-search-response-title>qwen3</span></h2>
+          <p>Qwen model family.</p>
+          <span x-test-capability>tools</span>
+          <span x-test-size>8b</span>
+          <span x-test-pull-count>10M</span>
+          <span x-test-tag-count>58</span>
+          <span x-test-updated>1 week ago</span>
+        </a>
+      </li>
+      <li x-test-model>
+        <a href="/library/gemma3">
+          <h2><span x-test-search-response-title>gemma3</span></h2>
+          <p>Gemma model family.</p>
+          <span x-test-capability>vision</span>
+          <span x-test-size>4b</span>
+        </a>
+      </li>
+    </ul>
+    """
+
+    rows = parse_ollama_catalog(html, installed={"qwen3", "qwen3:8b"}, limit=10)
+
+    assert [row["name"] for row in rows] == ["gemma3"]
+    assert rows[0]["description"] == "Gemma model family."
+    assert rows[0]["sizes"] == ["4b"]
+    assert rows[0]["capabilities"] == ["vision"]
+    assert rows[0]["url"] == "https://ollama.com/library/gemma3"
+
+
 def test_ollama_show_parser_tolerates_model_metadata() -> None:
     from cockpit.adapters.ollama_chat import _parse_model_details
 

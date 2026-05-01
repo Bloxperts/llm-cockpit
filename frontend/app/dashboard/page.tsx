@@ -47,6 +47,17 @@ type PerfRunState = {
   cancelling: boolean;
 };
 
+type CatalogModel = {
+  name: string;
+  description?: string | null;
+  sizes?: string[];
+  capabilities?: string[];
+  pulls?: string | null;
+  tags?: string | null;
+  updated?: string | null;
+  url?: string | null;
+};
+
 // Sprint 5b — RTX 3090 (Ampere GPU Boost 4.0) thresholds. These are the
 // rated values for the codebase's reference card; they're a reasonable
 // proxy for any modern NVIDIA part. If the cockpit ever needs per-SKU
@@ -583,29 +594,45 @@ function LoadModelDialog({
   onPulled: () => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
-  const [pulling, setPulling] = useState(false);
+  const [catalog, setCatalog] = useState<CatalogModel[]>([]);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [pullingModel, setPullingModel] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const modelName = query.trim();
   const installedNames = useMemo(() => new Set(snapshot.models.map((m) => m.name)), [snapshot.models]);
-  const onDemandModels = useMemo(
-    () =>
-      snapshot.models
-        .filter((m) => (m.config?.placement ?? "on_demand") === "on_demand")
-        .sort((a, b) => a.name.localeCompare(b.name)),
+  const installedBases = useMemo(
+    () => new Set(snapshot.models.map((m) => m.name.split(":", 1)[0])),
     [snapshot.models],
   );
-  const visibleModels = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return onDemandModels;
-    return onDemandModels.filter((m) => m.name.toLowerCase().includes(needle));
-  }, [onDemandModels, query]);
-  const exactInstalled = modelName ? installedNames.has(modelName) : false;
 
-  async function onDownload() {
-    if (!modelName || pulling || exactInstalled) return;
-    setPulling(true);
-    setStatus("Starting download...");
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setCatalogBusy(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams({ q: query.trim(), limit: "30" });
+        const response = await api<{ models: CatalogModel[] }>(`/api/admin/ollama/models/catalog?${params}`);
+        if (!cancelled) setCatalog(response.models ?? []);
+      } catch (e) {
+        if (!cancelled) {
+          setCatalog([]);
+          setError(e instanceof ApiError ? `Catalog search failed: HTTP ${e.status}` : "Catalog search failed.");
+        }
+      } finally {
+        if (!cancelled) setCatalogBusy(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
+
+  async function onDownload(modelName: string) {
+    if (!modelName || pullingModel) return;
+    setPullingModel(modelName);
+    setStatus(`Starting download for ${modelName}...`);
     setError(null);
     try {
       for await (const ev of streamSse(`/api/admin/ollama/models/${encodeURIComponent(modelName)}/pull`, {
@@ -621,7 +648,7 @@ function LoadModelDialog({
           const label = typeof data.status === "string" ? data.status : "Downloading";
           const completed = typeof data.completed === "number" ? data.completed : null;
           const total = typeof data.total === "number" ? data.total : null;
-          setStatus(total && completed != null ? `${label} (${Math.round((completed / total) * 100)}%)` : label);
+          setStatus(total && completed != null ? `${modelName}: ${label} (${Math.round((completed / total) * 100)}%)` : `${modelName}: ${label}`);
         }
         if (ev.event === "error") {
           setError(typeof data.detail === "string" ? data.detail : "Download failed.");
@@ -629,10 +656,10 @@ function LoadModelDialog({
         }
         if (ev.event === "done") {
           const success = data.success === true;
-          setStatus(success ? "Downloaded. Refreshing dashboard..." : "Download finished without success.");
+          setStatus(success ? `${modelName} downloaded. Refreshing dashboard...` : "Download finished without success.");
           if (success) {
             await onPulled();
-            setQuery("");
+            setCatalog((prev) => prev.filter((m) => m.name !== modelName));
           }
           break;
         }
@@ -640,7 +667,7 @@ function LoadModelDialog({
     } catch (e) {
       setError(e instanceof ApiError ? `Download failed: HTTP ${e.status}` : "Download failed.");
     } finally {
-      setPulling(false);
+      setPullingModel(null);
     }
   }
 
@@ -651,7 +678,7 @@ function LoadModelDialog({
           <div>
             <h2 className="text-lg font-semibold text-neutral-950 dark:text-white">Load model</h2>
             <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-              Search local On Demand models or download a new Ollama model by exact name.
+              Search Ollama's model catalog. Local models are hidden from this list.
             </p>
           </div>
           <button type="button" onClick={onClose} className="cockpit-button px-3 py-1.5 text-sm">
@@ -664,17 +691,9 @@ function LoadModelDialog({
               className="cockpit-input min-h-10 flex-1"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="llama3.1:8b"
+              placeholder="Search Ollama catalog"
               autoFocus
             />
-            <button
-              type="button"
-              onClick={onDownload}
-              disabled={!modelName || pulling || exactInstalled}
-              className="cockpit-button cockpit-button-primary min-h-10 px-4 text-sm"
-            >
-              {pulling ? "Downloading" : exactInstalled ? "Already present" : "Download"}
-            </button>
           </div>
           {status || error ? (
             <div
@@ -690,34 +709,63 @@ function LoadModelDialog({
           <div>
             <div className="mb-2 flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold uppercase text-neutral-600 dark:text-neutral-400">
-                On Demand
+                Ollama Catalog
               </h3>
               <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-mono text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                {visibleModels.length}
+                {catalogBusy ? "..." : catalog.length}
               </span>
             </div>
             <div className="max-h-80 overflow-y-auto rounded-md border border-[var(--cockpit-border)]">
-              {visibleModels.length ? (
+              {catalog.length ? (
                 <ul className="divide-y divide-[var(--cockpit-border)]">
-                  {visibleModels.map((m) => (
+                  {catalog.map((m) => {
+                    const installed = installedNames.has(m.name) || installedBases.has(m.name.split(":", 1)[0]);
+                    return (
                     <li key={m.name} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
                       <div className="min-w-0">
                         <div className="break-all font-medium text-neutral-900 dark:text-neutral-100">
                           {m.name}
                         </div>
-                        <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                          {m.tag ?? "untagged"} · {fmtBytes(m.size_bytes)}
+                        {m.description ? (
+                          <div className="mt-0.5 max-h-9 overflow-hidden text-xs text-neutral-600 dark:text-neutral-400">
+                            {m.description}
+                          </div>
+                        ) : null}
+                        <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                          {(m.sizes ?? []).slice(0, 6).map((size) => (
+                            <span key={size} className="rounded bg-neutral-100 px-1.5 py-0.5 dark:bg-neutral-900">
+                              {size}
+                            </span>
+                          ))}
+                          {(m.capabilities ?? []).slice(0, 4).map((capability) => (
+                            <span key={capability} className="rounded bg-sky-50 px-1.5 py-0.5 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                              {capability}
+                            </span>
+                          ))}
+                          {m.pulls ? <span>{m.pulls} pulls</span> : null}
+                          {m.tags ? <span>{m.tags} tags</span> : null}
+                          {m.updated ? <span>updated {m.updated}</span> : null}
                         </div>
                       </div>
-                      <span className="shrink-0 rounded bg-neutral-100 px-2 py-1 text-[11px] text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
-                        On Demand
-                      </span>
+                      <button
+                        type="button"
+                        disabled={Boolean(pullingModel) || installed}
+                        onClick={() => onDownload(m.name)}
+                        className="cockpit-button cockpit-button-primary min-h-8 shrink-0 px-3 py-1.5 text-xs"
+                      >
+                        {pullingModel === m.name ? "Downloading" : installed ? "Installed" : "Download"}
+                      </button>
                     </li>
-                  ))}
+                  );
+                  })}
                 </ul>
+              ) : catalogBusy ? (
+                <div className="px-3 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                  Searching Ollama catalog...
+                </div>
               ) : (
                 <div className="px-3 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                  No local On Demand models match.
+                  No catalog models match, or matching models are already installed.
                 </div>
               )}
             </div>
