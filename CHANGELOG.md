@@ -3,6 +3,16 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.6] — 2026-05-02 — Ollama catalog loader
+
+Patch release for model loading.
+
+### Changed — Dashboard
+
+- The Load model dialog now searches the Ollama catalog instead of local
+  models, hides already-installed model families, and downloads a selected
+  catalog result via the existing Ollama pull flow.
+
 ## [v0.5.5] — 2026-05-02 — On Demand model loading
 
 Patch release for the dashboard placement model.
