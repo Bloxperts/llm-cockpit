@@ -32,6 +32,7 @@ from cockpit.deps import get_chat_factory, get_session, get_telemetry_factory
 from cockpit.models import (
     Message,
     ModelConfig,
+    ModelMetadata,
     ModelPerf,
     ModelTag,
     Setting,
@@ -118,7 +119,31 @@ def _allowed_placements(gpu_count: int) -> list[str]:
     return cols
 
 
-def _options_for_placement(placement: str) -> dict[str, Any]:
+def _resolve_keep_alive(
+    placement: str,
+    *,
+    keep_alive_mode: str | None = None,
+    keep_alive_seconds: int | None = None,
+) -> int:
+    mode = keep_alive_mode or "default"
+    if mode == "permanent":
+        return -1
+    if mode == "unload":
+        return 0
+    if mode == "finite" and keep_alive_seconds is not None:
+        return max(0, int(keep_alive_seconds))
+    if placement in ("on_demand", "available"):
+        return PLACEMENT_KEEP_ALIVE_COLD_S
+    return PLACEMENT_KEEP_ALIVE_WARM_S
+
+
+def _options_for_placement(
+    placement: str,
+    *,
+    keep_alive_mode: str | None = None,
+    keep_alive_seconds: int | None = None,
+    num_ctx_default: int | None = None,
+) -> dict[str, Any]:
     """UC-02 §placement transition table.
 
     | placement      | keep_alive | main_gpu | num_gpu |
@@ -128,11 +153,22 @@ def _options_for_placement(placement: str) -> dict[str, Any]:
     | on_demand      | 0          | omitted  | omitted |
     | available      | 0          | omitted  | omitted |
     """
+    keep_alive = _resolve_keep_alive(
+        placement,
+        keep_alive_mode=keep_alive_mode,
+        keep_alive_seconds=keep_alive_seconds,
+    )
     if placement.startswith("gpu") and placement != "multi_gpu":
         gpu_idx = int(placement[3:])
-        return {"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S, "main_gpu": gpu_idx}
+        options: dict[str, Any] = {"keep_alive": keep_alive, "main_gpu": gpu_idx}
+        if num_ctx_default is not None:
+            options["num_ctx"] = num_ctx_default
+        return options
     if placement == "multi_gpu":
-        return {"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S, "num_gpu": 99}
+        options = {"keep_alive": keep_alive, "num_gpu": 99}
+        if num_ctx_default is not None:
+            options["num_ctx"] = num_ctx_default
+        return options
     # on_demand / available
     return {"keep_alive": PLACEMENT_KEEP_ALIVE_COLD_S}
 
@@ -239,15 +275,64 @@ def _detect_main_gpu_actual(before: list[GpuSnapshot] | None, after: list[GpuSna
     return growths[0][1]
 
 
-def _upsert_model_config(session: Session, model: str, placement: str) -> ModelConfig:
+def _upsert_model_config(
+    session: Session,
+    model: str,
+    placement: str,
+    *,
+    keep_alive_mode: str | None = None,
+    keep_alive_seconds: int | None = None,
+    num_ctx_default: int | None = None,
+    num_ctx_default_provided: bool = False,
+) -> ModelConfig:
     cfg = session.query(ModelConfig).filter_by(model=model).first()
     if cfg is None:
         cfg = ModelConfig(model=model, placement=placement)
         session.add(cfg)
     else:
         cfg.placement = placement
+    if placement in ("on_demand", "available"):
+        cfg.keep_alive_mode = "unload"
+    elif keep_alive_mode is not None:
+        cfg.keep_alive_mode = keep_alive_mode
+    if keep_alive_seconds is not None:
+        cfg.keep_alive_seconds = keep_alive_seconds
+        if keep_alive_mode is None:
+            cfg.keep_alive_mode = "finite"
+    if num_ctx_default_provided:
+        cfg.num_ctx_default = num_ctx_default
     session.flush()
     return cfg
+
+
+def _validate_keep_alive(mode: str | None, seconds: int | None) -> None:
+    if mode is not None and mode not in {"default", "finite", "permanent", "unload"}:
+        raise HTTPException(422, detail={"detail": "invalid_keep_alive_mode", "mode": mode})
+    if seconds is not None and seconds < 0:
+        raise HTTPException(422, detail={"detail": "invalid_keep_alive_seconds"})
+    if mode == "finite" and seconds is None:
+        raise HTTPException(422, detail={"detail": "finite_keep_alive_requires_seconds"})
+
+
+def _upsert_metadata_from_details(
+    session: Session,
+    *,
+    model: str,
+    details,
+    local_modified_at=None,
+) -> ModelMetadata:
+    row = session.query(ModelMetadata).filter_by(model=model).first()
+    if row is None:
+        row = ModelMetadata(model=model)
+        session.add(row)
+    row.parameter_size = details.parameter_size
+    row.quantization_level = details.quantization_level
+    row.architecture_context_length = details.architecture_context_length
+    row.capabilities_json = json.dumps(details.capabilities or [])
+    row.local_modified_at = details.modified_at or local_modified_at
+    row.metadata_refreshed_at = datetime.now(UTC).replace(tzinfo=None)
+    session.flush()
+    return row
 
 
 @router.post(
@@ -277,14 +362,27 @@ async def place_model(
             },
         )
 
-    options = _options_for_placement(body.placement)
+    _validate_keep_alive(body.keep_alive_mode, body.keep_alive_seconds)
+    options = _options_for_placement(
+        body.placement,
+        keep_alive_mode=body.keep_alive_mode,
+        keep_alive_seconds=body.keep_alive_seconds,
+        num_ctx_default=body.num_ctx_default,
+    )
     expected_main_gpu = _expected_main_gpu(body.placement)
     should_be_loaded = _placement_should_be_loaded(body.placement)
 
     # UPSERT first so observers see the desired state even if warm-up fails.
     cfg = db.query(ModelConfig).filter_by(model=model).first()
     old_placement = cfg.placement if cfg is not None else None
-    _upsert_model_config(db, model, body.placement)
+    cfg = _upsert_model_config(
+        db,
+        model,
+        body.placement,
+        keep_alive_mode=body.keep_alive_mode,
+        keep_alive_seconds=body.keep_alive_seconds,
+        num_ctx_default=body.num_ctx_default,
+    )
 
     lock = request.app.state.model_locks[model]
     main_gpu_actual: int | None = None
@@ -325,6 +423,11 @@ async def place_model(
                     main_gpu_actual = _detect_main_gpu_actual(before, after)
                     if expected_main_gpu is not None and main_gpu_actual is not None:
                         mismatch = main_gpu_actual != expected_main_gpu
+                    try:
+                        details = await chat.show_model(model)
+                        _upsert_metadata_from_details(db, model=model, details=details)
+                    except (OllamaModelNotFound, OllamaUnreachableError, OllamaResponseError):
+                        pass
             except HTTPException:
                 raise
 
@@ -346,9 +449,14 @@ async def place_model(
 
     return PlaceResponse(
         applied=PlaceApplied(
-            keep_alive_seconds=int(options.get("keep_alive", 0)),
+            keep_alive=options.get("keep_alive", 0),
+            keep_alive_seconds=(
+                int(options["keep_alive"]) if isinstance(options.get("keep_alive"), int) and options["keep_alive"] >= 0 else None
+            ),
+            keep_alive_mode=cfg.keep_alive_mode,
             main_gpu=options.get("main_gpu"),
             num_gpu=options.get("num_gpu"),
+            num_ctx=options.get("num_ctx"),
         ),
         loaded_now=loaded_now,
         mismatch=mismatch,
@@ -409,6 +517,11 @@ async def pull_model(
                 if existing is None:
                     session.add(ModelConfig(model=model, placement="available"))
                     session.flush()
+                try:
+                    details = await chat.show_model(model)
+                    _upsert_metadata_from_details(session, model=model, details=details)
+                except (OllamaModelNotFound, OllamaUnreachableError, OllamaResponseError):
+                    pass
             write_admin_audit(
                 session,
                 actor_id=actor_id,
@@ -451,6 +564,7 @@ async def delete_model(
 
     db.execute(delete(ModelConfig).where(ModelConfig.model == model))
     db.execute(delete(ModelTag).where(ModelTag.model == model))
+    db.execute(delete(ModelMetadata).where(ModelMetadata.model == model))
     write_admin_audit(
         db,
         actor_id=user.id,
@@ -482,10 +596,16 @@ async def patch_settings(
         cfg = ModelConfig(model=model, placement="available")
         db.add(cfg)
     changes: dict[str, Any] = {}
+    if body.keep_alive_mode is not None:
+        _validate_keep_alive(body.keep_alive_mode, body.keep_alive_seconds)
+        cfg.keep_alive_mode = body.keep_alive_mode
+        changes["keep_alive_mode"] = body.keep_alive_mode
     if body.keep_alive_seconds is not None:
         cfg.keep_alive_seconds = body.keep_alive_seconds
+        if body.keep_alive_mode is None:
+            cfg.keep_alive_mode = "finite"
         changes["keep_alive_seconds"] = body.keep_alive_seconds
-    if body.num_ctx_default is not None:
+    if "num_ctx_default" in body.model_fields_set:
         cfg.num_ctx_default = body.num_ctx_default
         changes["num_ctx_default"] = body.num_ctx_default
     if body.single_flight is not None:
@@ -506,6 +626,47 @@ async def patch_settings(
     )
     db.commit()
     return {"updated": changes}
+
+
+@router.post(
+    "/models/metadata/refresh",
+    summary="Refresh cached /api/show metadata for known models (admin).",
+)
+async def refresh_model_metadata(
+    request: Request,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_session),
+    chat_factory=Depends(get_chat_factory),
+) -> dict[str, Any]:
+    refreshed: list[str] = []
+    errors: dict[str, str] = {}
+    async with _AdapterScope(lambda: chat_factory(request.app.state.settings.ollama_url)) as chat:
+        try:
+            models = await chat.list_models()
+        except OllamaUnreachableError as exc:
+            raise HTTPException(503, detail={"detail": "ollama_unreachable", "cause": str(exc)})
+        for info in models:
+            try:
+                details = await chat.show_model(info.name)
+                _upsert_metadata_from_details(
+                    db,
+                    model=info.name,
+                    details=details,
+                    local_modified_at=info.modified,
+                )
+                refreshed.append(info.name)
+            except Exception as exc:  # best-effort metadata surface
+                errors[info.name] = str(exc)
+    write_admin_audit(
+        db,
+        actor_id=user.id,
+        action="model_metadata_refresh",
+        target_model=None,
+        details={"refreshed": refreshed, "errors": errors},
+        source_ip=request.client.host if request.client else None,
+    )
+    db.commit()
+    return {"refreshed": refreshed, "errors": errors}
 
 
 # --- Performance harness --------------------------------------------------
@@ -593,6 +754,10 @@ def _save_model_perf(
     throughput_tps: float | None,
     max_ctx_observed: int | None,
     gpu_layout: dict[str, int],
+    placement_tested: str | None = None,
+    gpu_count_at_test: int | None = None,
+    num_ctx_used: int | None = None,
+    keep_alive_used: str | None = None,
 ) -> ModelPerf:
     row = ModelPerf(
         model=model,
@@ -600,6 +765,10 @@ def _save_model_perf(
         throughput_tps=throughput_tps,
         max_ctx_observed=max_ctx_observed,
         gpu_layout_json=json.dumps(gpu_layout) if gpu_layout else None,
+        placement_tested=placement_tested,
+        gpu_count_at_test=gpu_count_at_test,
+        num_ctx_used=num_ctx_used,
+        keep_alive_used=keep_alive_used,
     )
     session.add(row)
     session.flush()
@@ -623,6 +792,10 @@ def _last_perf_row(session: Session, model: str) -> dict[str, Any] | None:
         "cold_load_seconds": row.cold_load_seconds,
         "throughput_tps": row.throughput_tps,
         "max_ctx_observed": row.max_ctx_observed,
+        "placement_tested": row.placement_tested,
+        "gpu_count_at_test": row.gpu_count_at_test,
+        "num_ctx_used": row.num_ctx_used,
+        "keep_alive_used": row.keep_alive_used,
         "gpu_layout_diff": json.loads(row.gpu_layout_json) if row.gpu_layout_json else {},
     }
 
@@ -916,6 +1089,9 @@ async def perf_test(
         with session_factory() as s:
             cfg = s.query(ModelConfig).filter_by(model=model).first()
             prior_placement = cfg.placement if cfg is not None else None
+            prior_keep_alive_mode = cfg.keep_alive_mode if cfg is not None else "default"
+            prior_keep_alive_seconds = cfg.keep_alive_seconds if cfg is not None else None
+            prior_num_ctx = cfg.num_ctx_default if cfg is not None else None
 
         try:
             host_lock_acquired = False
@@ -1002,6 +1178,16 @@ async def perf_test(
                                 throughput_tps=mean_tps,
                                 max_ctx_observed=max_ctx,
                                 gpu_layout=gpu_layout,
+                                placement_tested=prior_placement,
+                                gpu_count_at_test=len(request.app.state.gpu_state.last_snapshots or []),
+                                num_ctx_used=prior_num_ctx,
+                                keep_alive_used=(
+                                    str(_resolve_keep_alive(
+                                        prior_placement or "on_demand",
+                                        keep_alive_mode=prior_keep_alive_mode,
+                                        keep_alive_seconds=prior_keep_alive_seconds,
+                                    ))
+                                ),
                             )
                             write_admin_audit(
                                 s,
@@ -1013,6 +1199,7 @@ async def perf_test(
                                     "cold_load_seconds": cold_load_seconds,
                                     "throughput_tps": mean_tps,
                                     "max_ctx_observed": max_ctx,
+                                    "placement_tested": prior_placement,
                                 },
                                 source_ip=source_ip,
                             )

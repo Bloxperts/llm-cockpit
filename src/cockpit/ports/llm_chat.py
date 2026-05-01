@@ -26,6 +26,17 @@ class ModelInfo:
 
 
 @dataclass(frozen=True)
+class ModelDetails:
+    name: str
+    parameter_size: str | None = None
+    quantization_level: str | None = None
+    architecture_context_length: int | None = None
+    capabilities: list[str] | None = None
+    modified_at: datetime | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class LoadedModel:
     name: str
     size_vram: int
@@ -56,6 +67,8 @@ class LLMChat(Protocol):
     """The single outbound port. v0.1's only adapter is `OllamaLLMChat`."""
 
     async def list_models(self) -> list[ModelInfo]: ...
+
+    async def show_model(self, model: str) -> ModelDetails: ...
 
     async def loaded(self) -> list[LoadedModel]: ...
 

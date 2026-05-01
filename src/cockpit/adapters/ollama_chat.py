@@ -23,6 +23,7 @@ import httpx
 from cockpit.ports.llm_chat import (
     ChatChunk,
     LoadedModel,
+    ModelDetails,
     ModelInfo,
     OllamaModelNotFound,
     OllamaResponseError,
@@ -93,6 +94,20 @@ class OllamaLLMChat:
             for m in (payload.get("models") or [])
             if "name" in m
         ]
+
+    # --- show_model --------------------------------------------------------
+
+    async def show_model(self, model: str) -> ModelDetails:
+        try:
+            resp = await self._client.post("/api/show", json={"name": model})
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            raise OllamaUnreachableError(f"{self.url}: {exc!s}") from exc
+        if resp.status_code == 404:
+            raise OllamaModelNotFound(model)
+        if resp.status_code != 200:
+            raise OllamaResponseError(resp.status_code, resp.text)
+        payload = resp.json()
+        return _parse_model_details(model, payload)
 
     # --- loaded ------------------------------------------------------------
 
@@ -236,4 +251,51 @@ def _parse_pull_progress(line: str) -> PullProgress:
         digest=obj.get("digest"),
         total=obj.get("total"),
         completed=obj.get("completed"),
+    )
+
+
+def _first_present(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_model_details(model: str, payload: dict[str, Any]) -> ModelDetails:
+    details = payload.get("details") or {}
+    model_info = payload.get("model_info") or {}
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, list):
+        capabilities = None
+
+    ctx = _parse_optional_int(
+        _first_present(
+            model_info,
+            (
+                "llama.context_length",
+                "qwen2.context_length",
+                "gemma3.context_length",
+                "gemma2.context_length",
+                "general.context_length",
+            ),
+        )
+    )
+    return ModelDetails(
+        name=model,
+        parameter_size=details.get("parameter_size") or details.get("parameters"),
+        quantization_level=details.get("quantization_level") or details.get("quantization"),
+        architecture_context_length=ctx,
+        capabilities=[str(c) for c in capabilities] if capabilities else None,
+        modified_at=_parse_iso_datetime(payload.get("modified_at")),
+        raw=payload,
     )

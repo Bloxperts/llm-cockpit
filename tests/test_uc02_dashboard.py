@@ -232,6 +232,7 @@ async def test_model_state_sampler_records_error_on_unreachable() -> None:
         (1, ["gpu0", "on_demand", "available"]),
         (2, ["gpu0", "gpu1", "multi_gpu", "on_demand", "available"]),
         (3, ["gpu0", "gpu1", "gpu2", "multi_gpu", "on_demand", "available"]),
+        (5, ["gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "multi_gpu", "on_demand", "available"]),
     ],
 )
 def test_columns_for_various_gpu_counts(gpu_count: int, expected: list[str]) -> None:
@@ -285,6 +286,8 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
     assert card.name == "gemma3:27b"
     assert card.tag == "chat"
     assert card.actual.loaded is True
+    assert card.metadata.release_date_label is not None
+    assert card.context.estimate_confidence in {"unknown", "estimated", "measured"}
 
 
 def test_write_admin_audit_inserts_row(session_factory: sessionmaker) -> None:
@@ -593,6 +596,56 @@ def test_place_invalid_placement_returns_422(settings: Settings, seeded_users: d
         )
     assert r.status_code == 422
     assert r.json()["detail"]["detail"] == "invalid_placement"
+
+
+def test_place_gpu4_allowed_on_five_gpu_host(settings: Settings, seeded_users: dict) -> None:
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        loaded=[LoadedModel(name="m", size_vram=1, until=None)],
+        tokens=["ok"],
+    )
+    client = _build_client(
+        settings,
+        chat=chat,
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(i) for i in range(5)]),
+        skip_samplers=True,
+    )
+    with client:
+        _seed_gpu_state(client, gpu_count=5)
+        _login_admin(client, seeded_users)
+        r = client.post("/api/admin/ollama/models/m/place", json={"placement": "gpu4"})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"]["main_gpu"] == 4
+    assert chat.calls_of("chat_stream")[0]["options"]["main_gpu"] == 4
+
+
+def test_place_gpu4_rejected_on_two_gpu_host(settings: Settings, seeded_users: dict) -> None:
+    chat = FakeLLMChat(models=[model_info("m")])
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[]), skip_samplers=True)
+    with client:
+        _seed_gpu_state(client, gpu_count=2)
+        _login_admin(client, seeded_users)
+        r = client.post("/api/admin/ollama/models/m/place", json={"placement": "gpu4"})
+    assert r.status_code == 422
+
+
+def test_place_permanent_keep_alive_maps_negative(settings: Settings, seeded_users: dict) -> None:
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        loaded=[LoadedModel(name="m", size_vram=1, until=None)],
+        tokens=["ok"],
+    )
+    client = _build_client(settings, chat=chat, telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]), skip_samplers=True)
+    with client:
+        _seed_gpu_state(client, gpu_count=1)
+        _login_admin(client, seeded_users)
+        r = client.post(
+            "/api/admin/ollama/models/m/place",
+            json={"placement": "gpu0", "keep_alive_mode": "permanent"},
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"]["keep_alive"] == -1
+    assert chat.calls_of("chat_stream")[0]["options"]["keep_alive"] == -1
 
 
 def test_place_detects_main_gpu_mismatch(settings: Settings, seeded_users: dict) -> None:
@@ -1305,6 +1358,27 @@ def test_allowed_placements_no_gpu() -> None:
 
     assert _allowed_placements(0) == ["on_demand", "available"]
     assert _allowed_placements(1) == ["gpu0", "on_demand", "available"]
+
+
+def test_ollama_show_parser_tolerates_model_metadata() -> None:
+    from cockpit.adapters.ollama_chat import _parse_model_details
+
+    details = _parse_model_details(
+        "qwen3:8b",
+        {
+            "details": {
+                "parameter_size": "8B",
+                "quantization_level": "Q4_K_M",
+            },
+            "model_info": {"qwen2.context_length": 131072},
+            "capabilities": ["completion", "tools"],
+            "modified_at": "2026-05-01T10:00:00Z",
+        },
+    )
+    assert details.parameter_size == "8B"
+    assert details.quantization_level == "Q4_K_M"
+    assert details.architecture_context_length == 131072
+    assert details.capabilities == ["completion", "tools"]
 
 
 # --- Direct unit tests for the perf-harness helpers -----------------------
