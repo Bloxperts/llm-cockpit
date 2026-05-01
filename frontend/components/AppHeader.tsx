@@ -22,7 +22,22 @@ export function AppHeader() {
   const pathname = usePathname();
   const [theme, setThemeState] = useState<Theme>(() => getEffectiveTheme());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    api<{ version: string }>("/api/version")
+      .then((payload) => {
+        if (active) setAppVersion(payload.version);
+      })
+      .catch(() => {
+        if (active) setAppVersion(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -86,6 +101,11 @@ export function AppHeader() {
             LC
           </span>
           <span className="hidden sm:inline">LLM Cockpit</span>
+          {appVersion ? (
+            <span className="hidden rounded-md border border-[var(--cockpit-border)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-neutral-500 dark:text-neutral-400 md:inline">
+              v{appVersion}
+            </span>
+          ) : null}
         </Link>
 
         <nav className="flex flex-wrap items-center gap-1.5 text-sm ml-1 sm:ml-3">
