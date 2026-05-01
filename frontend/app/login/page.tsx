@@ -47,16 +47,22 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex-1 flex items-center justify-center px-4">
+    <main className="flex-1 flex items-center justify-center px-4 py-10">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm space-y-4 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-8 shadow-sm"
+        className="cockpit-panel w-full max-w-sm space-y-4 p-8"
       >
-        <h1 className="text-xl font-semibold">LLM Cockpit — Sign in</h1>
+        <div>
+          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-neutral-950 font-mono text-sm font-semibold text-white dark:bg-white dark:text-neutral-950">
+            LC
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
+          <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">LLM Cockpit</p>
+        </div>
         <label className="block">
           <span className="text-sm font-medium">Username</span>
           <input
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-3 py-2"
+            className="cockpit-input mt-1 w-full"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
@@ -68,7 +74,7 @@ export default function LoginPage() {
           <span className="text-sm font-medium">Password</span>
           <input
             type="password"
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-3 py-2"
+            className="cockpit-input mt-1 w-full"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
@@ -78,7 +84,7 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="w-full rounded-md bg-neutral-900 dark:bg-neutral-100 dark:text-neutral-900 text-white px-4 py-2 font-medium disabled:opacity-60"
+          className="cockpit-button cockpit-button-primary w-full"
         >
           {submitting ? "Signing in…" : "Sign in"}
         </button>

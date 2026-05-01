@@ -6,9 +6,8 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
 import { hasAtLeast, useAuthStore } from "@/lib/auth-store";
-import { getEffectiveTheme, toggleTheme } from "@/lib/dark-mode";
+import { Theme, getEffectiveTheme, toggleTheme } from "@/lib/dark-mode";
 
-// Sprint 7 — JWT lifetime preferences. Mirrors the backend's TTL_MAP.
 const TTL_OPTIONS: Array<{ days: number; label: string }> = [
   { days: 1, label: "1 day" },
   { days: 7, label: "7 days" },
@@ -21,15 +20,10 @@ export function AppHeader() {
   const setMe = useAuthStore((s) => s.setMe);
   const reset = useAuthStore((s) => s.reset);
   const pathname = usePathname();
-  const [theme, setThemeState] = useState<"light" | "dark">("light");
+  const [theme, setThemeState] = useState<Theme>(() => getEffectiveTheme());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setThemeState(getEffectiveTheme());
-  }, []);
-
-  // Close the dropdown on outside-click / Escape.
   useEffect(() => {
     if (!menuOpen) return;
     function onPointer(e: PointerEvent) {
@@ -53,9 +47,7 @@ export function AppHeader() {
   async function logout() {
     try {
       await api("/api/auth/logout", { method: "POST" });
-    } catch {
-      // Ignore — we're going to /login regardless.
-    }
+    } catch {}
     reset();
     window.location.replace("/login/");
   }
@@ -71,8 +63,6 @@ export function AppHeader() {
         method: "PATCH",
         body: JSON.stringify({ ttl_days: days }),
       });
-      // Reflect in the auth store so the dropdown shows the new value.
-      // The backend persisted it; me.session_ttl_days is the source of truth.
       if (me) setMe({ ...me, session_ttl_days: days });
     } catch (e) {
       if (e instanceof ApiError) {
@@ -90,94 +80,60 @@ export function AppHeader() {
   ];
 
   return (
-    <header className="h-14 flex items-center border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900">
-      <div className="max-w-7xl w-full mx-auto px-4 flex items-center gap-6">
-        <span className="font-semibold text-neutral-900 dark:text-white tracking-tight">
-          LLM Cockpit
-        </span>
-        <nav className="flex gap-1 text-sm">
-          {links
-            .filter((l) => l.show)
-            .map((l) => {
-              const active = pathname?.startsWith(l.href.replace(/\/$/, ""));
-              return (
-                <Link
-                  key={l.href}
-                  href={l.href}
-                  className={`px-3 py-1.5 rounded-full transition ${
-                    active
-                      ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
-                      : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                  }`}
-                >
-                  {l.label}
-                </Link>
-              );
-            })}
+    <header className="cockpit-header sticky top-0 z-40 border-b border-[var(--cockpit-border)] bg-[color-mix(in_srgb,var(--cockpit-surface)_88%,transparent)] backdrop-blur-lg">
+      <div className="w-full max-w-[1300px] mx-auto px-3 sm:px-4 min-h-16 flex items-center gap-3">
+        <Link href="/dashboard/" className="flex items-center gap-2 font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-neutral-950 text-white dark:bg-white dark:text-neutral-950 font-mono text-sm shadow-sm">
+            LC
+          </span>
+          <span className="hidden sm:inline">LLM Cockpit</span>
+        </Link>
+
+        <nav className="flex flex-wrap items-center gap-1.5 text-sm ml-1 sm:ml-3">
+          {links.filter((l) => l.show).map((l) => {
+            const active = pathname?.startsWith(l.href.replace(/\/$/, ""));
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={`rounded-lg px-3 py-1.5 font-medium border ${
+                  active
+                    ? "border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-950"
+                    : "border-transparent text-neutral-600 dark:text-neutral-300 hover:border-[var(--cockpit-border)] hover:bg-[var(--cockpit-surface-muted)]"
+                }`}
+              >
+                {l.label}
+              </Link>
+            );
+          })}
         </nav>
+
         <div className="ml-auto flex items-center gap-2 text-sm">
-          <button
-            type="button"
-            onClick={onThemeToggle}
-            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="rounded-full p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-300"
-          >
+          <button type="button" onClick={onThemeToggle} aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} className="rounded-lg border border-transparent p-2 text-neutral-600 dark:text-neutral-300 hover:border-[var(--cockpit-border)] hover:bg-[var(--cockpit-surface-muted)]">
             {theme === "dark" ? <SunIcon /> : <MoonIcon />}
           </button>
-          {/* Sprint 7 — user menu: change password + session TTL preference. */}
+
           <div className="relative" ref={menuRef}>
-            <button
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((v) => !v)}
-              className="text-xs rounded-md border border-neutral-200 dark:border-neutral-700 px-3 py-1 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200"
-            >
+            <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)} className="rounded-lg border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] px-3 py-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:bg-[var(--cockpit-surface-muted)] shadow-sm">
               {me.username} · {me.role} ▾
             </button>
             {menuOpen ? (
-              <div
-                role="menu"
-                className="absolute right-0 mt-2 w-64 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg z-50 p-2 text-xs"
-              >
-                <Link
-                  href="/change-password/"
-                  onClick={() => setMenuOpen(false)}
-                  className="block px-3 py-2 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200"
-                  role="menuitem"
-                >
+              <div role="menu" className="absolute right-0 mt-2 w-64 rounded-xl border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] shadow-lg z-50 p-2 text-xs">
+                <Link href="/change-password/" onClick={() => setMenuOpen(false)} className="block rounded-lg px-3 py-2 text-neutral-700 dark:text-neutral-200 hover:bg-[var(--cockpit-surface-muted)]" role="menuitem">
                   Change password
                 </Link>
-                <div className="px-3 py-2 border-t border-neutral-200 dark:border-neutral-800 mt-1">
+                <div className="mt-1 border-t border-[var(--cockpit-border)] px-3 py-2">
                   <label className="block">
-                    <span className="block text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400 mb-1">
-                      Session duration
-                    </span>
-                    <select
-                      value={String(me.session_ttl_days ?? 7)}
-                      onChange={(e) => void changeSessionTtl(Number(e.target.value))}
-                      className="w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-transparent px-2 py-1"
-                    >
+                    <span className="mb-1 block text-[10px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Session duration</span>
+                    <select value={String(me.session_ttl_days ?? 7)} onChange={(e) => void changeSessionTtl(Number(e.target.value))} className="cockpit-input w-full py-1 text-xs">
                       {TTL_OPTIONS.map((opt) => (
-                        <option key={opt.days} value={String(opt.days)}>
-                          {opt.label}
-                        </option>
+                        <option key={opt.days} value={String(opt.days)}>{opt.label}</option>
                       ))}
                     </select>
-                    <span className="block mt-1 text-[10px] text-neutral-500 dark:text-neutral-500">
-                      Takes effect on next login.
-                    </span>
+                    <span className="mt-1 block text-[10px] text-neutral-500">Takes effect on next login.</span>
                   </label>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void logout();
-                  }}
-                  className="w-full text-left px-3 py-2 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-200 mt-1 border-t border-neutral-200 dark:border-neutral-800"
-                  role="menuitem"
-                >
+                <button type="button" onClick={() => { setMenuOpen(false); void logout(); }} className="mt-1 w-full rounded-lg border-t border-[var(--cockpit-border)] px-3 py-2 text-left text-neutral-700 dark:text-neutral-200 hover:bg-[var(--cockpit-surface-muted)]" role="menuitem">
                   Log out
                 </button>
               </div>
@@ -191,7 +147,17 @@ export function AppHeader() {
 
 function SunIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
     </svg>
@@ -200,7 +166,17 @@ function SunIcon() {
 
 function MoonIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );

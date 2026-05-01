@@ -6,7 +6,7 @@ User-facing requirements moved to `../use-cases/UC-NN-*.md` (matches AgenticBlox
 - `functional/UC-NN-*.md` — Functional Specification (how the system delivers the use case).
 - `test/UC-NN-*.md` — Test Specification (how it is verified).
 
-For the master index of all 10 use cases with status, sprint, and role gating, see [`../use-cases/README.md`](../use-cases/README.md).
+For the master index of all 12 use cases with status, sprint, and role gating, see [`../use-cases/README.md`](../use-cases/README.md).
 
 ## Status legend
 

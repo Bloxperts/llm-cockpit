@@ -7,33 +7,34 @@
 
 ## Current sprint
 
-**Sprint 10 (closed 2026-04-29, v0.4.0) — Perf-test progress UI + GPU1 placement diagnose.**
+**Sprint 11 (open) — UI refresh + release-readiness before PyPI.**
 
-**Window:** 2026-04-29.
-**Release:** `v0.4.0`.
+**Window:** 2026-04-30 — open.
+**Target release:** `v0.5.0`.
 
 **Goal**
 
-- Fix the "shows only 'connecting'" UX on `POST /api/admin/ollama/models/{model}/perf-test` per UC-02 v1.1 (Accepted 2026-04-29). SSE event types (`stage` / `progress` / `heartbeat` / `result` / `cancelled` / `error`), cancel route, frontend drawer with live tokens / cancel button / stalled detection.
-- Diagnose the GPU1 placement bug: drag-to-GPU1 doesn't reliably land there. Deliverable: a `lessons-learned/LL-NNN-gpu1-placement.md` with reproduction + root-cause hypothesis + recommendation. No fix commit without Chris's explicit go.
+- Rework the app UI into a smooth, coherent, release-quality interface before the public PyPI `1.0.0` release.
+- Restore drag-and-drop where appropriate, especially on the model placement board, while keeping accessible fallback controls.
+- Keep all existing UC-01..UC-10 behavior live and stable; fix any release-blocking functional gaps found during the UI pass.
 
-### Sprint 10 backlog
+### Sprint 11 backlog
 
 | Item | Spec | Plan | Status |
 |---|---|---|---|
-| UC-02 v1.1 perf-test progress UI | Functional Spec Accepted (v1.1, 2026-04-29) | SSE-event refactor on the existing perf-test endpoint + cancel route + frontend drawer with live progress, cancel button, stalled banner. No new migration. | User Accepted — Chris accepted PR + user acceptance 2026-04-29. |
-| BUG-GPU1 placement diagnose | Accepted LL-001 | Reproduce; inspect `actual.mismatch` + `actual.main_gpu_actual`; decide knob (Ollama best-effort / env var / process-per-GPU / code fix). | User Accepted — Neuroforge reproduction shows `main_gpu=1` still loads `phi4:14b` onto CUDA0. Recommendation: document and accept Ollama best-effort placement for v0.4.0; no fix commit in Sprint 10. |
+| UC-12 UI refresh and interaction polish | Use Case / Functional / Test specs Accepted (2026-04-30) | Hybrid design direction: operational dashboard + premium chat/code workspace. Smooth app shell, dashboard/model cards, drag-and-drop placement board with fallback, perf-test drawer polish, admin page alignment, responsive/focus/loading/error states, browser smoke screenshots. | In Progress — Chris accepted UC-12 on 2026-04-30. |
+| Release-readiness functional sweep | Existing UC-01..UC-10 Accepted/User Accepted | Keep all current functionality live while the UI changes; fix release-blocking regressions or obvious functionality gaps discovered during the redesign. | Planning — bounded by existing accepted specs. |
 
-**Out of scope:** UC-08 Slice E (first-run installer Part B reconcile — separate ticket). v2 backlog (external access, mobile/PWA).
+**Out of scope:** Public PyPI publishing (`v1.0.0` / Sprint 12), GPU hard-isolation architecture, Docker image publishing, Homebrew/apt/winget packages, off-LAN TLS/reverse-proxy work, v2 backlog (external access, mobile/PWA).
 
-### Sprint 10 working notes
+### Sprint 11 planning notes
 
-- 2026-04-29: `lessons-learned/LL-001-gpu1-placement.md` added as Draft. It records code-audit evidence, upstream Ollama GPU-selection references, and the Neuroforge reproduction protocol.
-- 2026-04-29: SSH to `bloxperts@neuroforge` confirmed. Ollama is reachable at `127.0.0.1:11434` and returns model tags/empty `/api/ps`.
-- 2026-04-29: Neuroforge NVIDIA driver/userspace mismatch was fixed by reboot. Both RTX 3090 cards are visible under driver `580.142`; passwordless sudo for scoped operational checks is configured.
-- 2026-04-29: Direct Ollama reproduction sent the cockpit-equivalent hint `options.main_gpu=1` for `phi4:14b`. Ollama loaded the model on CUDA0/GPU 0 (`nvidia-smi`: GPU 0 ~10752 MiB, GPU 1 ~4 MiB; Ollama logs: `CUDA0 model buffer`, `CUDA0 KV buffer`). Conclusion recorded in LL-001: single-daemon Ollama placement is best-effort; no GPU1 fix commit in Sprint 10.
-- 2026-04-29: UC-02 v1.1 implementation completed locally: perf-test SSE events (`stage`, `progress`, `heartbeat`, `result`, `cancelled`, `error`), cancel route, frontend progress drawer, stalled warning, version bump to `0.4.0`, changelog entry, backend tests, and rebuilt bundled frontend. Full pytest passed; frontend build passed. `npm run lint` still has pre-existing React 19 lint failures outside the touched dashboard work.
-- 2026-04-29: Chris accepted PR + User Acceptance. Sprint 10 is closed for `v0.4.0`.
+- 2026-04-29: UC-11 three-doc spec set drafted in the vault at Review status for PyPI publishing. It is now planned for Sprint 12 / `v1.0.0`.
+- 2026-04-29: The repo README and vault README still contain stale pre-release wording. Sprint 12 should clean that as part of package readiness; Sprint 11 may update user-facing copy only where it touches the UI.
+- 2026-04-29: Prior local wheel build showed why the release process must clean `build/` and `dist/` before building; otherwise stale frontend assets can leak into artifacts. This belongs to Sprint 12 release automation.
+- 2026-04-30: Chris changed the release sequence: UI and all remaining functionality must be live before PyPI. PyPI moves to Sprint 12 as the `1.0.0` release sprint.
+- 2026-04-30: UC-12 three-doc spec set drafted in Review. Recommended design direction is **Hybrid: Admin Dashboard + Premium Chat** with an operational placement board.
+- 2026-04-30: Chris accepted UC-12. Sprint 11 is open for implementation.
 
 ---
 
@@ -57,6 +58,22 @@
 ---
 
 ## Sprint history
+
+### Sprint 10 — UC-02 v1.1 Perf-test progress UI + GPU1 placement diagnose (closed 2026-04-29, v0.4.0)
+
+**Outcome:** ✅ closed.
+
+Delivered:
+- UC-02 v1.1 Functional Spec → User Accepted.
+- Perf-test SSE protocol upgrade: `stage`, `progress`, `heartbeat`, `result`, `cancelled`, `error`.
+- `POST /api/admin/ollama/models/{model}/perf-test/cancel` with cooperative cancellation and audit entry.
+- Dashboard perf-test drawer with stage badge, elapsed timer, live tokens/s, cancel button, stalled detection, result card, cancelled/error terminal states.
+- No `model_perf` row written for cancelled runs.
+- BUG-GPU1 diagnose-only LL-001 accepted. Neuroforge reproduction showed `main_gpu=1` still loaded `phi4:14b` onto CUDA0/GPU 0 under a single Ollama daemon. Recommendation: document and accept best-effort placement for v0.4.0; hard isolation requires a future architecture decision.
+- Version bumped to `0.4.0`; Neuroforge `pipx` install of local wheel passed `cockpit-admin doctor`.
+
+Notes / spec deviations:
+- GitHub tag `v0.4.0` was pushed. GitHub Release page creation was blocked by the local Codex approval/usage limit; Sprint 11 should include release automation so release notes are not dependent on a desktop session.
 
 ### Sprint 9 — UC-10 Admin Ollama configuration (closed 2026-04-28, v0.3.1)
 
@@ -194,10 +211,10 @@ Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learne
 
 ---
 
-## Backlog (post-Sprint-9)
+## Backlog (post-Sprint-10)
 
-1. **PyPI publish sprint** — once feature-complete, set up PyPI account + `[project]` metadata audit + GitHub Actions OIDC trusted-publisher workflow. Reference: memory `project_pypi_goal.md`.
-2. **UC-08 Slice E reconcile** — first-run installer Part B status — verify against shipped code; close or reopen as needed.
+1. **Sprint 11** — UC-12 UI refresh + release-readiness functional sweep. → target `v0.5.0`.
+2. **Sprint 12** — UC-11 public PyPI publishing + UC-08 Slice E reconcile. → target `v1.0.0`.
 3. **GPU hard-isolation architecture** — only if Chris wants strict per-GPU pinning after LL-001; likely one Ollama process per GPU with UUID-based process visibility.
 4. **Vault drift cleanup** — Sprint 2-7 implementation drift notes were stranded as `<!-- VAULT-SYNC: -->` comments in `/docs` and have been consolidated. Future improvement: add a sprint-end mirror-back step to PROCESS.md §8.
 5. **v2 backlog** — external access (VPN / Reverse Proxy / OIDC), Mobile/PWA. Reference: memory `project_v2_backlog.md`.
@@ -240,3 +257,10 @@ Delivered: PROCESS.md v1.0, DP-INDEX v1.0, ADR-001, ADR-002 v1.0, lessons-learne
 | 2026-04-29 | UC-02 v1.1 | Done (technical) → User Accepted | Chris |
 | 2026-04-29 | LL-001 GPU1 placement | Draft → Accepted | Chris |
 | 2026-04-29 | Sprint 10 | In review → Closed (v0.4.0) | Chris |
+| 2026-04-29 | UC-11 use case/spec/test | — → Review | Codex |
+| 2026-04-29 | Sprint 11 | — → Planning | Codex |
+| 2026-04-30 | Sprint 11 scope | PyPI publishing → UI refresh + release-readiness | Chris |
+| 2026-04-30 | UC-11 | Sprint 11 → Sprint 12 (`v1.0.0` PyPI release) | Chris |
+| 2026-04-30 | UC-12 use case/spec/test | — → Review | Codex |
+| 2026-04-30 | UC-12 use case/spec/test | Review → Accepted | Chris |
+| 2026-04-30 | Sprint 11 | Planning → Open | Chris |

@@ -188,13 +188,18 @@ export default function AdminUsersPage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-white dark:bg-neutral-950">
+    <div className="min-h-screen flex flex-col bg-[var(--background)]">
       <AppHeader />
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-6">
+      <main className="cockpit-page flex-1">
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-semibold text-neutral-900 dark:text-white">
-            Users
-          </h1>
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight text-neutral-900 dark:text-white">
+              Users
+            </h1>
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              Roles, session control, and account lifecycle.
+            </p>
+          </div>
           <div className="flex items-center gap-2 text-sm">
             <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-400">
               <input
@@ -207,7 +212,7 @@ export default function AdminUsersPage() {
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
-              className="rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 px-3 py-1.5 text-sm hover:opacity-90"
+              className="cockpit-button cockpit-button-primary"
             >
               + New user
             </button>
@@ -223,8 +228,8 @@ export default function AdminUsersPage() {
         {users === null ? (
           <div className="text-neutral-500">Loading…</div>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-neutral-200 dark:border-neutral-800">
-            <table className="w-full text-sm">
+          <div className="cockpit-panel overflow-x-auto">
+            <table className="cockpit-table">
               <thead className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400 bg-neutral-50 dark:bg-neutral-900/50">
                 <tr>
                   <th className="text-left px-3 py-2">Username</th>

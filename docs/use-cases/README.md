@@ -17,6 +17,8 @@ This is the cockpit-local equivalent of AgenticBlox's `use-cases/` folder.
 | UC-08 | First-run installation + bootstrap | n/a (pre-user) | 2 | [uc](UC-08-installation-bootstrap.md) | [fn](../specs/functional/UC-08-installation-bootstrap.md) | [t](../specs/test/UC-08-installation-bootstrap.md) |
 | UC-09 | First-login forced password change | any | 2 | [uc](UC-09-first-login-password-change.md) | [fn](../specs/functional/UC-09-first-login-password-change.md) | [t](../specs/test/UC-09-first-login-password-change.md) |
 | UC-10 | Admin: Ollama configuration + metrics | `admin` | 7 | [uc](UC-10-ollama-configuration.md) | [fn](../specs/functional/UC-10-ollama-configuration.md) | [t](../specs/test/UC-10-ollama-configuration.md) |
+| UC-11 | Public PyPI publishing | n/a (release engineering) | 12 | [uc](UC-11-pypi-publish.md) | [fn](../specs/functional/UC-11-pypi-publish.md) | [t](../specs/test/UC-11-pypi-publish.md) |
+| UC-12 | UI refresh and interaction polish | all logged-in roles | 11 | [uc](UC-12-ui-refresh.md) | [fn](../specs/functional/UC-12-ui-refresh.md) | [t](../specs/test/UC-12-ui-refresh.md) |
 
 ## Filename note
 
@@ -34,7 +36,7 @@ DG-004 (port or adapter) is **binding** on:
 - **UC-07** — `LLMChat` port (the canonical block).
 - **UC-10** — extends `LLMChat` with `pull_model` / `delete_model`.
 
-UC-04 / UC-05 inherit UC-07's block (no new boundary surface). UC-01 / UC-03 / UC-06 / UC-08 / UC-09 do not cross the platform boundary in v0.1 — DG-004 is N/A.
+UC-04 / UC-05 inherit UC-07's block (no new boundary surface). UC-01 / UC-03 / UC-06 / UC-08 / UC-09 / UC-11 / UC-12 do not cross the runtime platform boundary in v0.1 — DG-004 is N/A.
 
 DG-001 / DG-002 / DG-003 do not apply (no agents; delivery form locked once in ADR-002).
 
@@ -44,9 +46,9 @@ Role gating per ADR-004:
 
 | Min role | Use cases |
 |----------|-----------|
-| any (logged in) | UC-01, UC-02 (filtered view), UC-03 (filtered view), UC-09 |
+| any (logged in) | UC-01, UC-02 (filtered view), UC-03 (filtered view), UC-09, UC-12 |
 | `chat` | UC-04 |
 | `code` | UC-05 |
 | `admin` | UC-06, UC-10 |
 | infra (no user) | UC-07 |
-| n/a (pre-user) | UC-08 |
+| n/a (pre-user / release engineering) | UC-08, UC-11 |
