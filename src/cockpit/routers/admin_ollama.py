@@ -23,11 +23,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
+from cockpit.adapters.ollama_catalog import OllamaCatalogUnavailable, search_ollama_catalog
 from cockpit.deps import get_chat_factory, get_session, get_telemetry_factory
 from cockpit.models import (
     Message,
@@ -102,6 +103,17 @@ class _PerfRunState:
     def elapsed_ms(self) -> int:
         return int((time.monotonic() - self.started_at) * 1000)
 
+
+def _installed_catalog_names(request: Request) -> set[str]:
+    state = getattr(request.app.state, "model_state", None)
+    installed: set[str] = set()
+    for info in getattr(state, "available_models", []) or []:
+        name = getattr(info, "name", "")
+        if not name:
+            continue
+        installed.add(name)
+        installed.add(name.split(":", 1)[0])
+    return installed
 
 # --- Placement helpers ----------------------------------------------------
 
@@ -475,8 +487,34 @@ async def place_model(
 # --- Pull endpoint --------------------------------------------------------
 
 
+@router.get(
+    "/models/catalog",
+    summary="Search the Ollama model catalog (admin).",
+)
+async def search_model_catalog(
+    request: Request,
+    q: str = Query("", max_length=80),
+    limit: int = Query(20, ge=1, le=50),
+    user: User = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    del user
+    query = q.strip()
+    installed = _installed_catalog_names(request)
+    try:
+        models = await search_ollama_catalog(query=query, installed=installed, limit=limit)
+    except OllamaCatalogUnavailable as exc:
+        raise HTTPException(
+            502,
+            detail={"detail": "ollama_catalog_unreachable", "cause": str(exc)},
+        ) from exc
+    return {
+        "query": query,
+        "models": models,
+    }
+
+
 @router.post(
-    "/models/{model}/pull",
+    "/models/{model:path}/pull",
     summary="Pull a model from the Ollama registry (admin). Streams progress as SSE.",
 )
 async def pull_model(
