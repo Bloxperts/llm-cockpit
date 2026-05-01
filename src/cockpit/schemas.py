@@ -77,7 +77,9 @@ class GpuPayload(BaseModel):
 
 class ModelConfigPayload(BaseModel):
     placement: str
+    keep_alive_mode: str = "default"
     keep_alive_seconds: int | None
+    keep_alive_label: str | None = None
     num_ctx_default: int | None
     single_flight: bool
 
@@ -86,13 +88,31 @@ class ModelActualPayload(BaseModel):
     loaded: bool
     vram_mb: int | None
     main_gpu_actual: int | None
+    gpu_layout: dict[str, int] | None = None
     mismatch: bool
+
+
+class ModelMetadataPayload(BaseModel):
+    parameter_size: str | None = None
+    quantization_level: str | None = None
+    architecture_context_length: int | None = None
+    release_date: str | None = None
+    release_date_label: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class ModelContextPayload(BaseModel):
+    max_estimated_ctx: int | None = None
+    max_measured_ctx: int | None = None
+    estimate_confidence: str = "unknown"
+    headroom_mb: int | None = None
 
 
 class ModelMetricsPayload(BaseModel):
     cold_load_seconds: float | None
     throughput_tps: float | None
     max_ctx_observed: int | None
+    placement_tested: str | None = None
     measured_at: str | None
 
 
@@ -101,8 +121,10 @@ class ModelCardPayload(BaseModel):
     tag: str | None
     tag_source: str | None = None
     size_bytes: int
+    metadata: ModelMetadataPayload = Field(default_factory=ModelMetadataPayload)
     config: ModelConfigPayload
     actual: ModelActualPayload
+    context: ModelContextPayload = Field(default_factory=ModelContextPayload)
     metrics: ModelMetricsPayload | None
 
 
@@ -124,12 +146,18 @@ class DashboardSnapshot(BaseModel):
 
 class PlaceRequest(BaseModel):
     placement: str  # 'gpuN' | 'multi_gpu' | 'on_demand' | 'available'
+    keep_alive_mode: str | None = None
+    keep_alive_seconds: int | None = None
+    num_ctx_default: int | None = None
 
 
 class PlaceApplied(BaseModel):
-    keep_alive_seconds: int
+    keep_alive: int | str
+    keep_alive_seconds: int | None = None
+    keep_alive_mode: str = "default"
     main_gpu: int | None = None
     num_gpu: int | None = None
+    num_ctx: int | None = None
 
 
 class PlaceResponse(BaseModel):
@@ -142,6 +170,7 @@ class PlaceResponse(BaseModel):
 class ModelSettingsPatch(BaseModel):
     """All fields optional — only those present are updated."""
 
+    keep_alive_mode: str | None = None
     keep_alive_seconds: int | None = None
     num_ctx_default: int | None = None
     single_flight: bool | None = None
@@ -372,3 +401,4 @@ class AuditResponse(BaseModel):
     total: int
     page: int
     per_page: int
+    keep_alive_mode: str | None = None

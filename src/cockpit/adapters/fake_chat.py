@@ -20,6 +20,7 @@ from typing import Any
 from cockpit.ports.llm_chat import (
     ChatChunk,
     LoadedModel,
+    ModelDetails,
     ModelInfo,
     OllamaModelNotFound,
     PullProgress,
@@ -41,6 +42,7 @@ class FakeLLMChat:
         tokens: list[str] | None = None,
         final_chunk: ChatChunk | None = None,
         pull_progress: list[PullProgress] | None = None,
+        details: dict[str, ModelDetails] | None = None,
         known_models: set[str] | None = None,
         raise_on_list_models: Exception | None = None,
         raise_on_loaded: Exception | None = None,
@@ -58,6 +60,7 @@ class FakeLLMChat:
             total_duration_ns=1_500_000,
         )
         self._pull_progress = list(pull_progress or [])
+        self._details = dict(details or {})
         self._known_models = set(known_models or {m.name for m in self._models})
         self._raise_on_list_models = raise_on_list_models
         self._raise_on_loaded = raise_on_loaded
@@ -82,6 +85,12 @@ class FakeLLMChat:
         if self._raise_on_list_models is not None:
             raise self._raise_on_list_models
         return list(self._models)
+
+    async def show_model(self, model: str) -> ModelDetails:
+        self._record("show_model", model=model)
+        if self._known_models and model not in self._known_models:
+            raise OllamaModelNotFound(model)
+        return self._details.get(model) or ModelDetails(name=model)
 
     async def loaded(self) -> list[LoadedModel]:
         self._record("loaded")

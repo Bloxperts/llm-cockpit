@@ -20,6 +20,7 @@ continues so the loop is fault-tolerant.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -30,7 +31,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from cockpit.models import MetricsSnapshot, ModelConfig, ModelPerf, ModelTag
+from cockpit.models import MetricsSnapshot, ModelConfig, ModelMetadata, ModelPerf, ModelTag
 from cockpit.ports.llm_chat import (
     LLMChat,
     LoadedModel,
@@ -238,9 +239,9 @@ class ModelStateSampler:
 def _columns_for(gpu_count: int) -> list[str]:
     """Build the placement column list per UC-02 §placement board.
 
-    No GPU → no GPU columns and no Multi-GPU column (nothing to multi-).
-    1 GPU → gpu0 only (no Multi-GPU; only one GPU).
-    ≥ 2 GPUs → gpu0..gpuN + Multi-GPU.
+    No GPU → no GPU columns and no Cross GPU column (nothing to span).
+    1 GPU → gpu0 only (no Cross GPU; only one GPU).
+    ≥ 2 GPUs → gpu0..gpuN + Cross GPU (`multi_gpu` on the wire).
     Always: On Demand + Available.
     """
     cols: list[str] = []
@@ -328,7 +329,96 @@ def _last_perf_for(session: Session, model: str) -> dict[str, Any] | None:
         "cold_load_seconds": row.cold_load_seconds,
         "throughput_tps": row.throughput_tps,
         "max_ctx_observed": row.max_ctx_observed,
+        "placement_tested": row.placement_tested,
         "measured_at": row.measured_at.isoformat() if row.measured_at else None,
+    }
+
+
+def _keep_alive_label(config: ModelConfig | None) -> str:
+    mode = config.keep_alive_mode if config is not None else "default"
+    seconds = config.keep_alive_seconds if config is not None else None
+    if mode == "permanent":
+        return "Permanent"
+    if mode == "unload":
+        return "Unload"
+    if mode == "finite" and seconds is not None:
+        if seconds % 3600 == 0:
+            return f"{seconds // 3600}h"
+        if seconds % 60 == 0:
+            return f"{seconds // 60}m"
+        return f"{seconds}s"
+    return "Default"
+
+
+def _metadata_payload(metadata: ModelMetadata | None, info: ModelInfo) -> dict[str, Any]:
+    capabilities: list[str] = []
+    if metadata is not None and metadata.capabilities_json:
+        try:
+            parsed = json.loads(metadata.capabilities_json)
+            if isinstance(parsed, list):
+                capabilities = [str(item) for item in parsed]
+        except json.JSONDecodeError:
+            capabilities = []
+
+    release_label = "Release: unknown"
+    release_date = None
+    if metadata is not None:
+        if metadata.release_date is not None:
+            release_date = metadata.release_date.date().isoformat()
+            release_label = f"Released: {release_date}"
+        elif metadata.registry_updated_at is not None:
+            release_date = metadata.registry_updated_at.date().isoformat()
+            release_label = f"Updated: {release_date}"
+        elif metadata.local_modified_at is not None:
+            release_date = metadata.local_modified_at.date().isoformat()
+            release_label = f"Local: {release_date}"
+    else:
+        release_date = info.modified.date().isoformat()
+        release_label = f"Local: {release_date}"
+
+    return {
+        "parameter_size": metadata.parameter_size if metadata is not None else None,
+        "quantization_level": metadata.quantization_level if metadata is not None else None,
+        "architecture_context_length": (
+            metadata.architecture_context_length if metadata is not None else None
+        ),
+        "release_date": release_date,
+        "release_date_label": release_label,
+        "capabilities": capabilities,
+    }
+
+
+def _context_payload(
+    *,
+    config: ModelConfig | None,
+    metadata: ModelMetadata | None,
+    perf: dict[str, Any] | None,
+    loaded_info: dict[str, Any] | None,
+    gpus: list[GpuSnapshot],
+) -> dict[str, Any]:
+    measured = perf.get("max_ctx_observed") if perf else None
+    if not loaded_info or not gpus or metadata is None or metadata.architecture_context_length is None:
+        return {
+            "max_estimated_ctx": None,
+            "max_measured_ctx": measured,
+            "estimate_confidence": "measured" if measured else "unknown",
+            "headroom_mb": None,
+        }
+
+    total_mb = sum(g.vram_total_mb for g in gpus)
+    free_mb = sum(max(0, g.vram_total_mb - g.vram_used_mb) for g in gpus)
+    headroom_mb = max(1024 * len(gpus), int(total_mb * 0.15))
+    usable_mb = max(0, free_mb - headroom_mb)
+    # Pragmatic first estimate: roughly 2 MiB/token for KV/cache growth on
+    # larger local models. It is intentionally conservative until measured.
+    estimated = min(metadata.architecture_context_length, int(usable_mb / 2))
+    if config is not None and config.num_ctx_default is not None:
+        estimated = max(estimated, min(config.num_ctx_default, metadata.architecture_context_length))
+    return {
+        "max_estimated_ctx": estimated if estimated > 0 else None,
+        "max_measured_ctx": measured,
+        "estimate_confidence": "measured" if measured else "estimated",
+        "headroom_mb": headroom_mb,
     }
 
 
@@ -340,11 +430,15 @@ def _build_model_card(
     tag_source: str | None,
     loaded_index: dict[str, dict[str, Any]],
     perf: dict[str, Any] | None,
+    metadata: ModelMetadata | None,
+    gpus: list[GpuSnapshot],
 ) -> dict[str, Any]:
     placement = config.placement if config is not None else "available"
     config_payload = {
         "placement": placement,
+        "keep_alive_mode": config.keep_alive_mode if config is not None else "default",
         "keep_alive_seconds": config.keep_alive_seconds if config is not None else None,
+        "keep_alive_label": _keep_alive_label(config),
         "num_ctx_default": config.num_ctx_default if config is not None else None,
         "single_flight": bool(config.single_flight) if config is not None else False,
     }
@@ -353,6 +447,7 @@ def _build_model_card(
         "loaded": bool(loaded_info),
         "vram_mb": (loaded_info or {}).get("vram_mb"),
         "main_gpu_actual": None,  # set by placement-transition handler when known
+        "gpu_layout": None,
         "mismatch": False,
     }
     return {
@@ -360,8 +455,16 @@ def _build_model_card(
         "tag": tag,
         "tag_source": tag_source,
         "size_bytes": info.size_bytes,
+        "metadata": _metadata_payload(metadata, info),
         "config": config_payload,
         "actual": actual,
+        "context": _context_payload(
+            config=config,
+            metadata=metadata,
+            perf=perf,
+            loaded_info=loaded_info,
+            gpus=gpus,
+        ),
         "metrics": perf,
     }
 
@@ -402,9 +505,16 @@ def assemble_dashboard_snapshot(
                 select(ModelTag).where(ModelTag.model.in_(model_names))
             ).scalars()
         }
+        metadata = {
+            meta.model: meta
+            for meta in session.execute(
+                select(ModelMetadata).where(ModelMetadata.model.in_(model_names))
+            ).scalars()
+        }
     else:
         configs = {}
         tags = {}
+        metadata = {}
 
     models_payload = [
         _build_model_card(
@@ -414,6 +524,8 @@ def assemble_dashboard_snapshot(
             tag_source=tags.get(info.name, (None, None))[1],
             loaded_index=loaded_index,
             perf=_last_perf_for(session, info.name),
+            metadata=metadata.get(info.name),
+            gpus=snapshots,
         )
         for info in model_state.available_models
     ]
