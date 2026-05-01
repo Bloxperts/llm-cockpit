@@ -29,6 +29,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from cockpit import __version__
 from cockpit.config import Settings
 from cockpit.db import make_engine, make_session_factory, upgrade_to_head
 from cockpit.deps import get_session, get_settings
@@ -43,6 +44,7 @@ from cockpit.routers import code as code_router
 from cockpit.routers import code_files as code_files_router
 from cockpit.routers import dashboard as dashboard_router
 from cockpit.routers import dashboard_history as dashboard_history_router
+from cockpit.schemas import AppVersionResponse
 from cockpit.services.aggregator import HourAggregator, MinuteAggregator
 from cockpit.services.metrics import (
     GpuSampler,
@@ -259,6 +261,10 @@ def create_app(
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/version", response_model=AppVersionResponse, tags=["meta"])
+    async def version() -> AppVersionResponse:
+        return AppVersionResponse(version=__version__)
 
     if FRONTEND_DIST_DIR.exists():
         app.mount(
