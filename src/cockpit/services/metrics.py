@@ -337,6 +337,7 @@ def _build_model_card(
     info: ModelInfo,
     config: ModelConfig | None,
     tag: str | None,
+    tag_source: str | None,
     loaded_index: dict[str, dict[str, Any]],
     perf: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -357,6 +358,7 @@ def _build_model_card(
     return {
         "name": info.name,
         "tag": tag,
+        "tag_source": tag_source,
         "size_bytes": info.size_bytes,
         "config": config_payload,
         "actual": actual,
@@ -395,7 +397,7 @@ def assemble_dashboard_snapshot(
             ).scalars()
         }
         tags = {
-            tag.model: tag.tag
+            tag.model: (tag.tag, tag.source)
             for tag in session.execute(
                 select(ModelTag).where(ModelTag.model.in_(model_names))
             ).scalars()
@@ -408,7 +410,8 @@ def assemble_dashboard_snapshot(
         _build_model_card(
             info=info,
             config=configs.get(info.name),
-            tag=tags.get(info.name),
+            tag=tags.get(info.name, (None, None))[0],
+            tag_source=tags.get(info.name, (None, None))[1],
             loaded_index=loaded_index,
             perf=_last_perf_for(session, info.name),
         )
