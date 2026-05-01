@@ -10,7 +10,8 @@
   --background: #f6f7f9;
   --foreground: #18181b;
   --cockpit-surface: #ffffff;
-  --cockpit-surface-muted: #f1f5f9;
+  --cockpit-surface-muted: #eff2f6;
+  --cockpit-elevated: #ffffff;
   --cockpit-border: #d9dee7;
   --cockpit-accent: #0ea5e9;
   --cockpit-accent-strong: #047857;
@@ -27,7 +28,8 @@
   --background: #101114;
   --foreground: #f4f4f5;
   --cockpit-surface: #181a20;
-  --cockpit-surface-muted: #22252d;
+  --cockpit-surface-muted: #232833;
+  --cockpit-elevated: #1d212b;
   --cockpit-border: #303440;
   --cockpit-accent: #38bdf8;
   --cockpit-accent-strong: #34d399;
@@ -176,4 +178,13 @@ textarea {
   vertical-align: -0.1em;
   background: currentColor;
   animation: cockpit-blink 1s steps(2, end) infinite;
+}
+
+
+.cockpit-header {
+  box-shadow: 0 6px 24px rgb(15 23 42 / 0.06);
+}
+
+.dark .cockpit-header {
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.22);
 }
