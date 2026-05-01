@@ -3,6 +3,19 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.2] — 2026-05-01 — NeuroForge install target
+
+Patch release for the internal NeuroForge install target after the
+chat/code polish pass.
+
+### Added — Frontend
+
+- Chat and code now share one workspace with separate sidebar sections and
+  per-mode model selection.
+- Chat/code prompts can include attached text files, with composer
+  drag-and-drop, file limits, attachment counts, and removable file chips.
+- The header now shows the installed `llm-cockpit` version.
+
 ## [v0.5.1] — 2026-05-01 — UI readiness patch
 
 Patch release for the pre-PyPI UI-readiness pass.
