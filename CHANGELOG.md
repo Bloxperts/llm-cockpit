@@ -3,6 +3,16 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.1] — 2026-05-01 — UI readiness patch
+
+Patch release for the pre-PyPI UI-readiness pass.
+
+### Fixed — Frontend
+
+- Admin Ollama now reads model tags from the dashboard snapshot's top-level
+  tag fields, so code-tagged models no longer render as `chat` in the
+  model-tag table.
+
 ## [v0.5.0] — 2026-04-30 — UI refresh and interaction polish (UC-12)
 
 Minor-version bump for Sprint 11. UC-12 starts the release-quality UI pass

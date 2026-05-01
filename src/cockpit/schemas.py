@@ -99,6 +99,7 @@ class ModelMetricsPayload(BaseModel):
 class ModelCardPayload(BaseModel):
     name: str
     tag: str | None
+    tag_source: str | None = None
     size_bytes: int
     config: ModelConfigPayload
     actual: ModelActualPayload
