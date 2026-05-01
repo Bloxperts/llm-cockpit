@@ -3,6 +3,18 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.3] — 2026-05-01 — Performance test stream fix
+
+Patch release for the NeuroForge performance-test drawer.
+
+### Fixed — Frontend
+
+- Performance-test SSE parsing now handles CRLF-framed events, so stage,
+  heartbeat, and result events render instead of leaving the drawer stuck at
+  `Starting`.
+- Cancelling a stale drawer now settles the UI when the backend reports that
+  no active run remains.
+
 ## [v0.5.2] — 2026-05-01 — NeuroForge install target
 
 Patch release for the internal NeuroForge install target after the

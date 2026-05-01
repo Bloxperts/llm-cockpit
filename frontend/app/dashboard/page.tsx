@@ -314,9 +314,22 @@ export default function DashboardPage() {
   async function onCancelPerfTest(model: string) {
     setPerfRun((prev) => (prev ? { ...prev, cancelling: true } : prev));
     try {
-      await api(`/api/admin/ollama/models/${encodeURIComponent(model)}/perf-test/cancel`, {
+      const res = await api<{ cancelled: boolean }>(`/api/admin/ollama/models/${encodeURIComponent(model)}/perf-test/cancel`, {
         method: "POST",
       });
+      if (!res.cancelled) {
+        setPerfRun((prev) =>
+          prev && prev.model === model
+            ? {
+                ...prev,
+                status: "cancelled",
+                stage: "idle",
+                cancelling: false,
+                lastEventAt: Date.now(),
+              }
+            : prev,
+        );
+      }
     } catch (e) {
       if (e instanceof ApiError) {
         setPerfRun((prev) =>
