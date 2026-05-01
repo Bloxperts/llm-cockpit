@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
@@ -85,6 +85,7 @@ export default function DashboardPage() {
   const [filter, setFilter] = useState<ModelFilter>("all");
   const [metadataBusy, setMetadataBusy] = useState(false);
   const [testAllBusy, setTestAllBusy] = useState(false);
+  const [loadModelOpen, setLoadModelOpen] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   // UC-03 — top-level Live / History tab. The Live SSE stream still
   // runs in the background regardless of which tab is shown so
@@ -137,13 +138,18 @@ export default function DashboardPage() {
     return () => window.clearInterval(id);
   }, []);
 
+  async function refreshSnapshot() {
+    const fresh = await api<DashboardSnapshot>("/api/dashboard/snapshot");
+    setSnapshot(fresh);
+  }
+
   async function onPlacementChange(
     model: string,
     placement: string,
     extras: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null } = {},
   ) {
     const previous = snapshot;
-    const current = snapshot?.models.find((m) => m.name === model)?.config?.placement ?? "available";
+    const current = snapshot?.models.find((m) => m.name === model)?.config?.placement ?? "on_demand";
     if (snapshot && placement === "multi_gpu" && current !== "multi_gpu") {
       const warning = crossGpuEvictionWarning(snapshot, model);
       if (warning && !window.confirm(warning)) {
@@ -183,7 +189,7 @@ export default function DashboardPage() {
     const model = String(event.active.id);
     const placement = event.over ? String(event.over.id) : null;
     if (!placement || !snapshot?.columns.includes(placement)) return;
-    const current = snapshot.models.find((m) => m.name === model)?.config?.placement ?? "available";
+    const current = snapshot.models.find((m) => m.name === model)?.config?.placement ?? "on_demand";
     if (current === placement || busyModel === model || !isAdmin) return;
     void onPlacementChange(model, placement);
   }
@@ -358,8 +364,7 @@ export default function DashboardPage() {
     setPlacementError(null);
     try {
       await api("/api/admin/ollama/models/metadata/refresh", { method: "POST" });
-      const fresh = await api<DashboardSnapshot>("/api/dashboard/snapshot");
-      setSnapshot(fresh);
+      await refreshSnapshot();
     } catch (e) {
       setPlacementError(e instanceof ApiError ? `Metadata refresh failed: HTTP ${e.status}` : "Metadata refresh failed.");
     } finally {
@@ -391,11 +396,11 @@ export default function DashboardPage() {
     return true;
   });
   for (const m of visibleModels) {
-    const placement = m.config?.placement ?? "available";
+    const placement = m.config?.placement ?? "on_demand";
     if (buckets.has(placement)) {
       buckets.get(placement)!.push(m);
     } else {
-      buckets.get("available")?.push(m);
+      buckets.get("on_demand")?.push(m);
     }
   }
 
@@ -487,6 +492,13 @@ export default function DashboardPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
+                      onClick={() => setLoadModelOpen(true)}
+                      className="cockpit-button min-h-8 px-3 py-1.5 text-xs"
+                    >
+                      Load model
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => onPerfTestAll(visibleModels)}
                       disabled={!visibleModels.length || Boolean(perfRun) || testAllBusy}
                       className="cockpit-button min-h-8 px-3 py-1.5 text-xs"
@@ -535,6 +547,13 @@ export default function DashboardPage() {
           onRunAgain={() => onPerfTest(perfRun.model)}
         />
       ) : null}
+      {loadModelOpen && isAdmin ? (
+        <LoadModelDialog
+          snapshot={snapshot}
+          onClose={() => setLoadModelOpen(false)}
+          onPulled={refreshSnapshot}
+        />
+      ) : null}
     </>
   );
 }
@@ -551,6 +570,161 @@ function StatusPill({ status }: { status: string }) {
     <span className={`px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wide ${bg}`}>
       {label}
     </span>
+  );
+}
+
+function LoadModelDialog({
+  snapshot,
+  onClose,
+  onPulled,
+}: {
+  snapshot: DashboardSnapshot;
+  onClose: () => void;
+  onPulled: () => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [pulling, setPulling] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const modelName = query.trim();
+  const installedNames = useMemo(() => new Set(snapshot.models.map((m) => m.name)), [snapshot.models]);
+  const onDemandModels = useMemo(
+    () =>
+      snapshot.models
+        .filter((m) => (m.config?.placement ?? "on_demand") === "on_demand")
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [snapshot.models],
+  );
+  const visibleModels = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return onDemandModels;
+    return onDemandModels.filter((m) => m.name.toLowerCase().includes(needle));
+  }, [onDemandModels, query]);
+  const exactInstalled = modelName ? installedNames.has(modelName) : false;
+
+  async function onDownload() {
+    if (!modelName || pulling || exactInstalled) return;
+    setPulling(true);
+    setStatus("Starting download...");
+    setError(null);
+    try {
+      for await (const ev of streamSse(`/api/admin/ollama/models/${encodeURIComponent(modelName)}/pull`, {
+        method: "POST",
+      })) {
+        let data: Record<string, unknown> = {};
+        try {
+          data = ev.data ? JSON.parse(ev.data) : {};
+        } catch {
+          data = {};
+        }
+        if (ev.event === "progress") {
+          const label = typeof data.status === "string" ? data.status : "Downloading";
+          const completed = typeof data.completed === "number" ? data.completed : null;
+          const total = typeof data.total === "number" ? data.total : null;
+          setStatus(total && completed != null ? `${label} (${Math.round((completed / total) * 100)}%)` : label);
+        }
+        if (ev.event === "error") {
+          setError(typeof data.detail === "string" ? data.detail : "Download failed.");
+          break;
+        }
+        if (ev.event === "done") {
+          const success = data.success === true;
+          setStatus(success ? "Downloaded. Refreshing dashboard..." : "Download finished without success.");
+          if (success) {
+            await onPulled();
+            setQuery("");
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      setError(e instanceof ApiError ? `Download failed: HTTP ${e.status}` : "Download failed.");
+    } finally {
+      setPulling(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <section className="w-full max-w-2xl rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--cockpit-border)] px-5 py-4">
+          <div>
+            <h2 className="text-lg font-semibold text-neutral-950 dark:text-white">Load model</h2>
+            <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+              Search local On Demand models or download a new Ollama model by exact name.
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="cockpit-button px-3 py-1.5 text-sm">
+            Close
+          </button>
+        </div>
+        <div className="space-y-4 px-5 py-4">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              className="cockpit-input min-h-10 flex-1"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="llama3.1:8b"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={onDownload}
+              disabled={!modelName || pulling || exactInstalled}
+              className="cockpit-button cockpit-button-primary min-h-10 px-4 text-sm"
+            >
+              {pulling ? "Downloading" : exactInstalled ? "Already present" : "Download"}
+            </button>
+          </div>
+          {status || error ? (
+            <div
+              className={`rounded-md border px-3 py-2 text-sm ${
+                error
+                  ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300"
+                  : "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200"
+              }`}
+            >
+              {error ?? status}
+            </div>
+          ) : null}
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase text-neutral-600 dark:text-neutral-400">
+                On Demand
+              </h3>
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-mono text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                {visibleModels.length}
+              </span>
+            </div>
+            <div className="max-h-80 overflow-y-auto rounded-md border border-[var(--cockpit-border)]">
+              {visibleModels.length ? (
+                <ul className="divide-y divide-[var(--cockpit-border)]">
+                  {visibleModels.map((m) => (
+                    <li key={m.name} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                      <div className="min-w-0">
+                        <div className="break-all font-medium text-neutral-900 dark:text-neutral-100">
+                          {m.name}
+                        </div>
+                        <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                          {m.tag ?? "untagged"} · {fmtBytes(m.size_bytes)}
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded bg-neutral-100 px-2 py-1 text-[11px] text-neutral-600 dark:bg-neutral-900 dark:text-neutral-300">
+                        On Demand
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="px-3 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                  No local On Demand models match.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -719,7 +893,7 @@ function ModelCardView({
   onDelete: () => void;
   onPerfTest: () => void;
 }) {
-  const placement = m.config?.placement ?? "available";
+  const placement = m.config?.placement ?? "on_demand";
   const safeCtx = m.context?.max_estimated_ctx ?? null;
   const configuredCtx = m.config?.num_ctx_default ?? null;
   const measuredCtx = m.context?.max_measured_ctx ?? m.metrics?.max_ctx_observed ?? null;

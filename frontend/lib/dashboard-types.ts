@@ -77,7 +77,6 @@ export interface DashboardSnapshot {
 export const COLUMN_LABELS: Record<string, string> = {
   multi_gpu: "Cross GPU",
   on_demand: "On Demand",
-  available: "Available",
 };
 
 export function isWarmColumn(col: string): boolean {
