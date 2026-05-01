@@ -32,7 +32,7 @@ export default function ChatPage() {
   return (
     <>
       <AppHeader />
-      <ChatShell mode="chat" />
+      <ChatShell />
     </>
   );
 }

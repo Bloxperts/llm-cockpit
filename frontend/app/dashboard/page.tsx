@@ -19,12 +19,13 @@ import {
   COLUMN_LABELS,
   DashboardSnapshot,
   ModelCardPayload,
-  WARM_COLUMNS,
   fmtBytes,
+  isWarmColumn,
 } from "@/lib/dashboard-types";
 
 type DashboardTab = "live" | "history";
 type PerfStatus = "idle" | "running" | "result" | "cancelled" | "error";
+type ModelFilter = "all" | "loaded" | "missing_perf" | "warnings";
 
 type PerfResult = {
   cold_load_seconds?: number | null;
@@ -81,6 +82,9 @@ export default function DashboardPage() {
   const [perfRun, setPerfRun] = useState<PerfRunState | null>(null);
   const [perfTick, setPerfTick] = useState(Date.now());
   const [placementError, setPlacementError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<ModelFilter>("all");
+  const [metadataBusy, setMetadataBusy] = useState(false);
+  const [testAllBusy, setTestAllBusy] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   // UC-03 — top-level Live / History tab. The Live SSE stream still
   // runs in the background regardless of which tab is shown so
@@ -133,7 +137,11 @@ export default function DashboardPage() {
     return () => window.clearInterval(id);
   }, []);
 
-  async function onPlacementChange(model: string, placement: string) {
+  async function onPlacementChange(
+    model: string,
+    placement: string,
+    extras: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null } = {},
+  ) {
     const previous = snapshot;
     setBusyModel(model);
     setPlacementError(null);
@@ -150,7 +158,7 @@ export default function DashboardPage() {
     try {
       await api(`/api/admin/ollama/models/${encodeURIComponent(model)}/place`, {
         method: "POST",
-        body: JSON.stringify({ placement }),
+        body: JSON.stringify({ placement, ...extras }),
       });
     } catch (e) {
       setSnapshot(previous);
@@ -292,6 +300,17 @@ export default function DashboardPage() {
     }
   }
 
+  async function onPerfTestAll(models: ModelCardPayload[]) {
+    setTestAllBusy(true);
+    try {
+      for (const model of models) {
+        await onPerfTest(model.name);
+      }
+    } finally {
+      setTestAllBusy(false);
+    }
+  }
+
   async function onCancelPerfTest(model: string) {
     setPerfRun((prev) => (prev ? { ...prev, cancelling: true } : prev));
     try {
@@ -314,6 +333,20 @@ export default function DashboardPage() {
     }
   }
 
+  async function onRefreshMetadata() {
+    setMetadataBusy(true);
+    setPlacementError(null);
+    try {
+      await api("/api/admin/ollama/models/metadata/refresh", { method: "POST" });
+      const fresh = await api<DashboardSnapshot>("/api/dashboard/snapshot");
+      setSnapshot(fresh);
+    } catch (e) {
+      setPlacementError(e instanceof ApiError ? `Metadata refresh failed: HTTP ${e.status}` : "Metadata refresh failed.");
+    } finally {
+      setMetadataBusy(false);
+    }
+  }
+
   if (!snapshot) {
     return (
       <>
@@ -328,7 +361,16 @@ export default function DashboardPage() {
   const isAdmin = me?.role === "admin";
   const buckets = new Map<string, ModelCardPayload[]>();
   for (const c of snapshot.columns) buckets.set(c, []);
-  for (const m of snapshot.models) {
+  const visibleModels = snapshot.models.filter((m) => {
+    const safe = m.context?.max_estimated_ctx;
+    const configured = m.config?.num_ctx_default;
+    const warning = Boolean(m.actual.mismatch || (safe && configured && configured > safe));
+    if (filter === "loaded") return m.actual.loaded;
+    if (filter === "missing_perf") return !m.metrics;
+    if (filter === "warnings") return warning;
+    return true;
+  });
+  for (const m of visibleModels) {
     const placement = m.config?.placement ?? "available";
     if (buckets.has(placement)) {
       buckets.get(placement)!.push(m);
@@ -404,7 +446,45 @@ export default function DashboardPage() {
             </section>
 
             <DndContext sensors={sensors} onDragEnd={onPlacementDragEnd}>
-              <section className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1 rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-1">
+                  {(["all", "loaded", "missing_perf", "warnings"] as ModelFilter[]).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setFilter(f)}
+                      className={`rounded px-2.5 py-1 text-xs font-medium ${
+                        filter === f
+                          ? "bg-neutral-950 text-white dark:bg-white dark:text-neutral-950"
+                          : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                      }`}
+                    >
+                      {f === "missing_perf" ? "Missing perf" : f[0].toUpperCase() + f.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                {isAdmin ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onPerfTestAll(visibleModels)}
+                      disabled={!visibleModels.length || Boolean(perfRun) || testAllBusy}
+                      className="cockpit-button min-h-8 px-3 py-1.5 text-xs"
+                    >
+                      {testAllBusy ? "Testing" : "Test all"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onRefreshMetadata}
+                      disabled={metadataBusy}
+                      className="cockpit-button min-h-8 px-3 py-1.5 text-xs"
+                    >
+                      {metadataBusy ? "Refreshing" : "Refresh metadata"}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <section className="flex gap-3 overflow-x-auto pb-2">
                 {snapshot.columns.map((col) => (
                   <ColumnView
                     key={col}
@@ -514,18 +594,22 @@ function ColumnView(props: {
   columns: string[];
   isAdmin: boolean;
   busyModel: string | null;
-  onPlacementChange: (model: string, placement: string) => void;
+  onPlacementChange: (
+    model: string,
+    placement: string,
+    extras?: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null },
+  ) => void;
   onDelete: (model: string) => void;
   onPerfTest: (model: string) => void;
 }) {
   const { col, models, columns, isAdmin, busyModel } = props;
   const { isOver, setNodeRef } = useDroppable({ id: col, disabled: !isAdmin });
   const label = COLUMN_LABELS[col] ?? col.toUpperCase();
-  const warm = WARM_COLUMNS.has(col);
+  const warm = isWarmColumn(col);
   return (
     <section
       ref={setNodeRef}
-      className={`min-h-64 rounded-md border p-2 ${
+      className={`min-h-64 w-[280px] flex-none rounded-md border p-2 ${
         isOver
           ? "border-sky-400 bg-sky-50 dark:border-sky-500 dark:bg-sky-950/40"
           : warm
@@ -554,7 +638,7 @@ function ColumnView(props: {
               columns={columns}
               isAdmin={isAdmin}
               busy={busyModel === m.name}
-              onPlacementChange={(placement) => props.onPlacementChange(m.name, placement)}
+              onPlacementChange={(placement, extras) => props.onPlacementChange(m.name, placement, extras)}
               onDelete={() => props.onDelete(m.name)}
               onPerfTest={() => props.onPerfTest(m.name)}
             />
@@ -578,11 +662,29 @@ function ModelCardView({
   columns: string[];
   isAdmin: boolean;
   busy: boolean;
-  onPlacementChange: (placement: string) => void;
+  onPlacementChange: (
+    placement: string,
+    extras?: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null },
+  ) => void;
   onDelete: () => void;
   onPerfTest: () => void;
 }) {
   const placement = m.config?.placement ?? "available";
+  const safeCtx = m.context?.max_estimated_ctx ?? null;
+  const configuredCtx = m.config?.num_ctx_default ?? null;
+  const measuredCtx = m.context?.max_measured_ctx ?? m.metrics?.max_ctx_observed ?? null;
+  const ctxWarning = Boolean(safeCtx && configuredCtx && configuredCtx > safeCtx);
+  const metadataBits = [m.metadata?.parameter_size, m.metadata?.quantization_level].filter(Boolean);
+  const actualLabel =
+    m.actual.gpu_layout && Object.keys(m.actual.gpu_layout).length
+      ? Object.entries(m.actual.gpu_layout)
+          .map(([gpu, mb]) => `${gpu}:${Math.round(mb / 1024)}GB`)
+          .join(" ")
+      : m.actual.main_gpu_actual != null
+        ? `GPU ${m.actual.main_gpu_actual}`
+        : m.actual.loaded
+          ? "loaded"
+          : "idle";
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: m.name,
     disabled: !isAdmin || busy,
@@ -617,21 +719,41 @@ function ModelCardView({
         ) : null}
         <div className="min-w-0 flex-1">
           <div className="font-semibold break-all leading-snug">{m.name}</div>
-          <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">
-            tag: {m.tag ?? "—"} · {fmtBytes(m.size_bytes)} ·{" "}
-            {m.actual.loaded ? "loaded" : "idle"}
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-neutral-600 dark:text-neutral-400">
+            <span className="rounded bg-neutral-100 px-1.5 py-0.5 dark:bg-neutral-900">
+              {m.tag ?? "untagged"}
+            </span>
+            <span>{fmtBytes(m.size_bytes)}</span>
+            {metadataBits.length ? <span>{metadataBits.join(" · ")}</span> : null}
+          </div>
+          <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+            {m.metadata?.release_date_label ?? "Release: unknown"}
           </div>
         </div>
       </div>
-      {/* Sprint 5b — show the configured context window so admins see the
-          VRAM budget at a glance. Falls back to "—" when no model_config
-          row exists or num_ctx_default is null. */}
-      <div className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5 font-mono">
-        ctx {m.config?.num_ctx_default?.toLocaleString() ?? "—"}
+      <div className="mt-2 grid grid-cols-2 gap-1 text-[11px]">
+        <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
+          <span className="text-neutral-500 dark:text-neutral-400">req</span>{" "}
+          {COLUMN_LABELS[placement] ?? placement.toUpperCase()}
+        </div>
+        <div className={`rounded px-2 py-1 ${m.actual.loaded ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-neutral-100 dark:bg-neutral-900"}`}>
+          {actualLabel}
+        </div>
+        <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
+          keep {m.config?.keep_alive_label ?? "Default"}
+        </div>
+        <div className={`rounded px-2 py-1 ${ctxWarning ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300" : "bg-neutral-100 dark:bg-neutral-900"}`}>
+          ctx {configuredCtx?.toLocaleString() ?? "—"} / {safeCtx?.toLocaleString() ?? "?"}
+        </div>
       </div>
       {m.actual.mismatch ? (
         <div className="text-xs text-rose-600 mt-0.5">
           Requested {placement} · Ollama placed on GPU {m.actual.main_gpu_actual}
+        </div>
+      ) : null}
+      {ctxWarning ? (
+        <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+          Configured ctx exceeds safe estimate.
         </div>
       ) : null}
       {m.metrics ? (
@@ -643,7 +765,7 @@ function ModelCardView({
             {m.metrics.throughput_tps?.toFixed(1) ?? "—"}tps
           </div>
           <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
-            {m.metrics.max_ctx_observed ?? "?"} ctx
+            {measuredCtx ?? "?"} ctx
           </div>
         </div>
       ) : (
@@ -665,6 +787,42 @@ function ModelCardView({
               </option>
             ))}
           </select>
+          <select
+            className="cockpit-input min-h-7 text-xs"
+            value={
+              m.config.keep_alive_mode === "permanent"
+                ? "permanent"
+                : m.config.keep_alive_seconds === 900
+                  ? "15m"
+                  : m.config.keep_alive_seconds === 3600
+                    ? "1h"
+                    : m.config.keep_alive_seconds === 14400
+                      ? "4h"
+                      : m.config.keep_alive_seconds === 86400
+                        ? "24h"
+                        : m.config.keep_alive_mode === "finite"
+                          ? "custom"
+                          : "default"
+            }
+            disabled={busy}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "permanent") onPlacementChange(placement, { keep_alive_mode: "permanent" });
+              if (v === "15m") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 900 });
+              if (v === "1h") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 3600 });
+              if (v === "4h") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 14400 });
+              if (v === "24h") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 86400 });
+            }}
+            title="Keep alive"
+          >
+            <option value="default">Default</option>
+            <option value="15m">15m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+            <option value="24h">24h</option>
+            <option value="permanent">Permanent</option>
+            <option value="custom">Custom</option>
+          </select>
           <button
             type="button"
             disabled={busy}
@@ -672,6 +830,33 @@ function ModelCardView({
             className="cockpit-button min-h-7 px-2 py-1 text-xs"
           >
             Perf
+          </button>
+          <button
+            type="button"
+            disabled={busy || !safeCtx}
+            onClick={() => onPlacementChange(placement, { num_ctx_default: safeCtx })}
+            className="cockpit-button min-h-7 px-2 py-1 text-xs"
+            title="Use safe estimate"
+          >
+            Safe ctx
+          </button>
+          <button
+            type="button"
+            disabled={busy || !measuredCtx}
+            onClick={() => onPlacementChange(placement, { num_ctx_default: measuredCtx })}
+            className="cockpit-button min-h-7 px-2 py-1 text-xs"
+            title="Use measured max"
+          >
+            Measured
+          </button>
+          <button
+            type="button"
+            disabled={busy || configuredCtx == null}
+            onClick={() => onPlacementChange(placement, { num_ctx_default: null })}
+            className="cockpit-button min-h-7 px-2 py-1 text-xs"
+            title="Clear context override"
+          >
+            Clear ctx
           </button>
           <button
             type="button"

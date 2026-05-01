@@ -26,8 +26,12 @@ import {
 
 import { CodeBlock } from "@/components/CodeBlock";
 import { ApiError, api, streamSse } from "@/lib/api";
+import { hasAtLeast, useAuthStore } from "@/lib/auth-store";
 
 const DEFAULT_CTX = 8192;
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_BYTES = 200 * 1024;
+type ChatMode = "chat" | "code";
 
 interface ConversationSummary {
   id: number;
@@ -80,19 +84,54 @@ interface FileEntry {
   is_dir: boolean;
 }
 
-export function ChatShell({ mode }: { mode: "chat" | "code" }) {
-  const apiPrefix = `/api/${mode}`;
-  const thinkingStorageKey = `cockpit_thinking_${mode}`;
+interface ComposerAttachment {
+  id: string;
+  name: string;
+  size: number;
+  type: string | null;
+  content: string;
+}
 
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [models, setModels] = useState<ModelPickerEntry[]>([]);
-  const [selected, setSelected] = useState<ConversationDetail | null>(null);
+export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode }) {
+  const me = useAuthStore((s) => s.me);
+  const canUseCode = me ? hasAtLeast(me.role, "code") : preferredMode === "code";
+  const sections = useMemo(
+    () =>
+      [
+        canUseCode ? { mode: "code" as const, label: "Code" } : null,
+        { mode: "chat" as const, label: "Chat" },
+      ].filter(Boolean) as Array<{ mode: ChatMode; label: string }>,
+    [canUseCode],
+  );
+
+  const [activeMode, setActiveMode] = useState<ChatMode>(
+    preferredMode === "code" && canUseCode ? "code" : "chat",
+  );
+  const [conversationsByMode, setConversationsByMode] = useState<
+    Record<ChatMode, ConversationSummary[]>
+  >({ chat: [], code: [] });
+  const [modelsByMode, setModelsByMode] = useState<Record<ChatMode, ModelPickerEntry[]>>({
+    chat: [],
+    code: [],
+  });
+  const [selectedByMode, setSelectedByMode] = useState<
+    Record<ChatMode, ConversationDetail | null>
+  >({ chat: null, code: null });
   const [streaming, setStreaming] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [draftByMode, setDraftByMode] = useState<Record<ChatMode, string>>({
+    chat: "",
+    code: "",
+  });
+  const [attachmentsByMode, setAttachmentsByMode] = useState<
+    Record<ChatMode, ComposerAttachment[]>
+  >({ chat: [], code: [] });
   const [streamingContent, setStreamingContent] = useState("");
-  const [thinkingEnabled, setThinkingEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(`cockpit_thinking_${mode}`) === "1";
+  const [thinkingByMode, setThinkingByMode] = useState<Record<ChatMode, boolean>>(() => {
+    if (typeof window === "undefined") return { chat: false, code: false };
+    return {
+      chat: window.localStorage.getItem("cockpit_thinking_chat") === "1",
+      code: window.localStorage.getItem("cockpit_thinking_code") === "1",
+    };
   });
 
   // Features 6 + 7 — timers.
@@ -103,78 +142,86 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
   // Feature 3 — scroll-to-bottom.
   const [atBottom, setAtBottom] = useState(true);
 
-  // Sprint 6 — code workspace file panel (only meaningful when mode === 'code').
+  // Sprint 6 — code workspace file panel.
   const [files, setFiles] = useState<FileEntry[]>([]);
   const refreshFiles = useCallback(async () => {
-    if (mode !== "code") return;
+    if (!canUseCode) return;
     try {
       const list = await api<FileEntry[]>("/api/code/files");
       setFiles(list);
     } catch {
       // Workspace may be empty or 401; surface elsewhere.
     }
-  }, [mode]);
+  }, [canUseCode]);
 
-  // react-markdown component map — built per-mode so the Save button only
-  // shows in code mode and its onSaved callback can refresh the file list.
+  const selected = selectedByMode[activeMode];
+  const conversations = conversationsByMode[activeMode];
+  const models = modelsByMode[activeMode];
+  const draft = draftByMode[activeMode];
+  const attachments = attachmentsByMode[activeMode];
+  const thinkingEnabled = thinkingByMode[activeMode];
+  const apiPrefix = `/api/${activeMode}`;
+
   const markdownComponents = useMemo(
-    () => buildMarkdownComponents(mode, refreshFiles),
-    [mode, refreshFiles],
+    () => buildMarkdownComponents(activeMode, refreshFiles),
+    [activeMode, refreshFiles],
   );
 
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   function toggleThinking() {
-    setThinkingEnabled((prev) => {
-      const next = !prev;
+    setThinkingByMode((prev) => {
+      const next = !prev[activeMode];
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(thinkingStorageKey, next ? "1" : "0");
+        window.localStorage.setItem(`cockpit_thinking_${activeMode}`, next ? "1" : "0");
       }
-      return next;
+      return { ...prev, [activeMode]: next };
     });
   }
 
-  const refreshConversations = useCallback(async () => {
-    const list = await api<ConversationSummary[]>(apiPrefix);
-    setConversations(list);
-  }, [apiPrefix]);
+  const refreshConversations = useCallback(async (targetMode: ChatMode) => {
+    const list = await api<ConversationSummary[]>(`/api/${targetMode}`);
+    setConversationsByMode((prev) => ({ ...prev, [targetMode]: list }));
+  }, []);
 
-  const refreshSelected = useCallback(
-    async (id: number) => {
-      const detail = await api<ConversationDetail>(`${apiPrefix}/${id}`);
-      setSelected(detail);
-    },
-    [apiPrefix],
-  );
+  const refreshSelected = useCallback(async (targetMode: ChatMode, id: number) => {
+    const detail = await api<ConversationDetail>(`/api/${targetMode}/${id}`);
+    setSelectedByMode((prev) => ({ ...prev, [targetMode]: detail }));
+  }, []);
 
   // Initial load.
   useEffect(() => {
     void (async () => {
-      try {
-        const list = await api<ConversationSummary[]>(apiPrefix);
-        setConversations(list);
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 401) {
-          window.location.replace("/login/");
-          return;
+      for (const section of sections) {
+        try {
+          await refreshConversations(section.mode);
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 401) {
+            window.location.replace("/login/");
+            return;
+          }
+          if (e instanceof ApiError && e.status === 409) {
+            window.location.replace("/change-password/");
+            return;
+          }
         }
-        if (e instanceof ApiError && e.status === 409) {
-          window.location.replace("/change-password/");
-          return;
+        try {
+          const ms = await api<ModelPickerEntry[]>(`/api/models?tag=${section.mode}`);
+          setModelsByMode((prev) => ({ ...prev, [section.mode]: ms }));
+        } catch {
+          /* picker stays empty if Ollama is unreachable */
         }
       }
-      try {
-        const ms = await api<ModelPickerEntry[]>(`/api/models?tag=${mode}`);
-        setModels(ms);
-      } catch {
-        /* picker stays empty if Ollama is unreachable */
-      }
-      // Sprint 6: prime the workspace file list when this is the Code page.
-      if (mode === "code") void refreshFiles();
+      if (canUseCode) void refreshFiles();
     })();
-  }, [apiPrefix, mode, refreshFiles]);
+  }, [canUseCode, refreshConversations, refreshFiles, sections]);
+
+  useEffect(() => {
+    if (activeMode === "code" && !canUseCode) setActiveMode("chat");
+  }, [activeMode, canUseCode]);
 
   // Auto-scroll on new content (only when user is already at the bottom).
   useLayoutEffect(() => {
@@ -184,8 +231,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
   }, [selected, streamingContent, atBottom]);
 
   // Feature 3 — IntersectionObserver to track whether the bottom anchor
-  // is visible. When it isn't, the floating scroll-to-bottom button
-  // shows up.
+  // is visible. When it isn't, the floating scroll-to-bottom button shows up.
   useEffect(() => {
     const root = messagesScrollRef.current;
     const target = messagesEndRef.current;
@@ -207,25 +253,27 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
     return () => window.clearInterval(id);
   }, [streaming, sendStart]);
 
-  async function newConversation() {
-    const fallback = models[0]?.name ?? null;
-    const created = await api<{ conversation_id: number; mode: string }>(apiPrefix, {
+  async function newConversation(targetMode = activeMode) {
+    const fallback = modelsByMode[targetMode][0]?.name ?? null;
+    const created = await api<{ conversation_id: number; mode: string }>(`/api/${targetMode}`, {
       method: "POST",
       body: JSON.stringify({ model: fallback }),
     });
-    await refreshConversations();
-    await refreshSelected(created.conversation_id);
+    setActiveMode(targetMode);
+    await refreshConversations(targetMode);
+    await refreshSelected(targetMode, created.conversation_id);
     setLastResponseSeconds(null);
     composerRef.current?.focus();
   }
 
-  async function selectConversation(id: number) {
+  async function selectConversation(targetMode: ChatMode, id: number) {
+    setActiveMode(targetMode);
     setStreamingContent("");
     setLastResponseSeconds(null);
-    await refreshSelected(id);
+    await refreshSelected(targetMode, id);
   }
 
-  async function consumeStream(url: string, body: object | undefined) {
+  async function consumeStream(url: string, body: object | undefined, targetMode: ChatMode, id: number) {
     const start = Date.now();
     setSendStart(start);
     setLiveElapsed(0);
@@ -256,51 +304,62 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
       setStreaming(false);
       setStreamingContent("");
       setSendStart(null);
-      if (selected) {
-        await refreshSelected(selected.id);
-        await refreshConversations();
-      }
+      await refreshSelected(targetMode, id);
+      await refreshConversations(targetMode);
     }
   }
 
   async function sendMessage() {
-    if (!selected || !draft.trim() || streaming) return;
-    const content = draft;
-    setDraft("");
+    if (!selected || (!draft.trim() && attachments.length === 0) || streaming) return;
+    const content = buildMessageContent(draft, attachments);
+    const targetMode = activeMode;
+    const conversationId = selected.id;
+    setDraftByMode((prev) => ({ ...prev, [targetMode]: "" }));
+    setAttachmentsByMode((prev) => ({ ...prev, [targetMode]: [] }));
     // Sprint 7 — optimistic UI: render the user's bubble immediately,
     // before the stream event arrives. The id=-1 sentinel is replaced
     // when the conversation reloads on the `done` event.
-    setSelected((prev) =>
-      prev
-        ? {
-            ...prev,
-            messages: [
-              ...prev.messages,
-              {
-                id: -1,
-                role: "user",
-                content,
-                model: prev.model,
-                usage_in: null,
-                usage_out: null,
-                gen_tps: null,
-                latency_ms: null,
-                ts: new Date().toISOString(),
-                error: null,
-              },
-            ],
-          }
-        : prev,
-    );
-    await consumeStream(`${apiPrefix}/${selected.id}/stream`, {
-      content,
-      think: thinkingEnabled,
+    setSelectedByMode((prev) => {
+      const current = prev[targetMode];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [targetMode]: {
+          ...current,
+          messages: [
+            ...current.messages,
+            {
+              id: -1,
+              role: "user",
+              content,
+              model: current.model,
+              usage_in: null,
+              usage_out: null,
+              gen_tps: null,
+              latency_ms: null,
+              ts: new Date().toISOString(),
+              error: null,
+            },
+          ],
+        },
+      };
     });
+    await consumeStream(
+      `/api/${targetMode}/${conversationId}/stream`,
+      { content, think: thinkingByMode[targetMode] },
+      targetMode,
+      conversationId,
+    );
   }
 
   async function regenerate() {
     if (!selected || streaming) return;
-    await consumeStream(`${apiPrefix}/${selected.id}/regenerate`, undefined);
+    await consumeStream(
+      `${apiPrefix}/${selected.id}/regenerate`,
+      undefined,
+      activeMode,
+      selected.id,
+    );
   }
 
   async function patchModel(modelName: string) {
@@ -309,14 +368,63 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
       method: "PATCH",
       body: JSON.stringify({ model: modelName }),
     });
-    await refreshSelected(selected.id);
+    await refreshSelected(activeMode, selected.id);
   }
 
   async function deleteConversation(id: number) {
+    const targetMode = activeMode;
     if (!window.confirm("Delete this conversation? This cannot be undone.")) return;
     await api(`${apiPrefix}/${id}`, { method: "DELETE" });
-    if (selected?.id === id) setSelected(null);
-    await refreshConversations();
+    if (selectedByMode[targetMode]?.id === id) {
+      setSelectedByMode((prev) => ({ ...prev, [targetMode]: null }));
+    }
+    await refreshConversations(targetMode);
+  }
+
+  function updateDraft(value: string) {
+    setDraftByMode((prev) => ({ ...prev, [activeMode]: value }));
+  }
+
+  async function attachFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    const existing = attachmentsByMode[activeMode];
+    const slots = Math.max(0, MAX_ATTACHMENTS - existing.length);
+    const picked = Array.from(fileList).slice(0, slots);
+    if (picked.length < fileList.length) {
+      alert(`Attach up to ${MAX_ATTACHMENTS} files per message.`);
+    }
+    const next: ComposerAttachment[] = [];
+    for (const file of picked) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        alert(`${file.name} is larger than ${formatBytes(MAX_ATTACHMENT_BYTES)}.`);
+        continue;
+      }
+      try {
+        next.push({
+          id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
+          name: file.name,
+          size: file.size,
+          type: file.type || null,
+          content: await file.text(),
+        });
+      } catch (e) {
+        alert(`Could not read ${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (next.length > 0) {
+      setAttachmentsByMode((prev) => ({
+        ...prev,
+        [activeMode]: [...prev[activeMode], ...next],
+      }));
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removeAttachment(id: string) {
+    setAttachmentsByMode((prev) => ({
+      ...prev,
+      [activeMode]: prev[activeMode].filter((a) => a.id !== id),
+    }));
   }
 
   // Feature 5 — token math.
@@ -344,52 +452,31 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden bg-[var(--background)] md:flex-row">
-      {/* Sidebar */}
-      <aside className="flex max-h-56 w-full flex-shrink-0 flex-col overflow-y-auto border-b border-[var(--cockpit-border)] bg-neutral-950 text-neutral-100 md:max-h-none md:w-72 md:border-b-0 md:border-r">
-        <div className="p-3">
-          <button
-            type="button"
-            onClick={newConversation}
-            className="w-full rounded-md bg-white px-3 py-2 text-left text-sm font-semibold text-neutral-950 hover:bg-neutral-200"
-          >
-            + New conversation
-          </button>
-        </div>
-        <ul className="px-2 pb-3">
-          {conversations.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
-                onClick={() => selectConversation(c.id)}
-                className={`w-full text-left px-3 py-2 rounded-md text-sm transition ${
-                  selected?.id === c.id
-                    ? "bg-neutral-800 ring-1 ring-neutral-700"
-                    : "hover:bg-neutral-900"
-                }`}
-              >
-                <div className="font-medium truncate">
-                  {c.title ?? `Conversation #${c.id}`}
-                </div>
-                <div className="text-xs text-neutral-400 truncate">
-                  {c.model ?? "—"} · {c.message_count} msgs
-                </div>
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        {mode === "code" ? (
-          <FilesPanel files={files} onRefresh={refreshFiles} />
-        ) : null}
+      <aside className="flex max-h-72 w-full flex-shrink-0 flex-col overflow-hidden border-b border-[var(--cockpit-border)] bg-neutral-950 text-neutral-100 md:max-h-none md:w-80 md:border-b-0 md:border-r">
+        {sections.map((section) => (
+          <ConversationSection
+            key={section.mode}
+            mode={section.mode}
+            label={section.label}
+            conversations={conversationsByMode[section.mode]}
+            selectedId={selectedByMode[section.mode]?.id ?? null}
+            active={activeMode === section.mode}
+            onActivate={() => setActiveMode(section.mode)}
+            onNew={() => void newConversation(section.mode)}
+            onSelect={(id) => void selectConversation(section.mode, id)}
+          />
+        ))}
+        {canUseCode ? <FilesPanel files={files} onRefresh={refreshFiles} /> : null}
       </aside>
 
-      {/* Main pane */}
       <section className="relative flex flex-1 flex-col overflow-hidden bg-[var(--cockpit-surface)]">
         {selected ? (
           <>
-            {/* Header */}
             <div className="flex flex-wrap items-center gap-3 border-b border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] px-4 py-3 text-sm">
-              <span className="font-medium text-neutral-900 dark:text-neutral-100 truncate max-w-xs">
+              <span className="rounded-md border border-[var(--cockpit-border)] px-2 py-1 text-xs font-semibold uppercase text-neutral-500 dark:text-neutral-400">
+                {activeMode}
+              </span>
+              <span className="max-w-xs truncate font-medium text-neutral-900 dark:text-neutral-100">
                 {selected.title ?? `Conversation #${selected.id}`}
               </span>
               <select
@@ -399,7 +486,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
               >
                 {models.map((m) => (
                   <option key={m.name} value={m.name}>
-                    {m.name} · {m.tag ?? "—"}
+                    {m.name} · {m.tag ?? "-"}
                   </option>
                 ))}
               </select>
@@ -417,7 +504,6 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
               </button>
             </div>
 
-            {/* Message list */}
             <div
               ref={messagesScrollRef}
               className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8"
@@ -429,10 +515,8 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                     <MessageBubble
                       key={m.id}
                       m={m}
-                      mode={mode}
+                      mode={activeMode}
                       streamingCursor={false}
-                      // The persisted last-assistant has no streaming cursor
-                      // — only the in-flight streaming bubble below does.
                       _isLast={isLast}
                       components={markdownComponents}
                     />
@@ -441,7 +525,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                 {streaming && streamingContent ? (
                   <AssistantBubble
                     content={streamingContent}
-                    mode={mode}
+                    mode={activeMode}
                     streamingCursor
                     error={null}
                     components={markdownComponents}
@@ -449,11 +533,7 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                 ) : null}
                 {selected.messages.length > 0 && !streaming ? (
                   <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={regenerate}
-                      className="cockpit-button text-xs"
-                    >
+                    <button type="button" onClick={regenerate} className="cockpit-button text-xs">
                       Regenerate
                     </button>
                   </div>
@@ -462,7 +542,6 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
               </div>
             </div>
 
-            {/* Floating scroll-to-bottom button (Feature 3) */}
             {!atBottom && selected.messages.length > 0 ? (
               <button
                 type="button"
@@ -470,45 +549,60 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                   messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
                 }
                 aria-label="Scroll to latest"
-                className="absolute right-6 bottom-44 z-10 rounded-full bg-neutral-900 p-2 text-white shadow-lg hover:opacity-90 dark:bg-white dark:text-neutral-900"
+                className="absolute bottom-44 right-6 z-10 rounded-full bg-neutral-900 p-2 text-white shadow-lg hover:opacity-90 dark:bg-white dark:text-neutral-900"
               >
                 <ArrowDownIcon />
               </button>
             ) : null}
 
-            {/* Compose */}
             <div className="border-t border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] px-4 py-3">
-              <div className="max-w-3xl mx-auto w-full">
-                {/* Thinking toggle (left) + live timer (right) */}
-                <div className="flex items-center justify-between mb-2 text-xs">
+              <div className="mx-auto w-full max-w-3xl">
+                <div className="mb-2 flex items-center justify-between text-xs">
                   <button
                     type="button"
                     onClick={toggleThinking}
                     className={`rounded-md border px-2.5 py-1 ${
                       thinkingEnabled
                         ? "border-amber-400 bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-                        : "border-neutral-300 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        : "border-neutral-300 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
                     }`}
                   >
                     {thinkingEnabled ? "Think: on" : "Think: off"}
                   </button>
                   {streaming ? (
                     <span className="font-mono text-neutral-500 dark:text-neutral-400">
-                      ⏱ {liveElapsed.toFixed(1)} s
+                      {liveElapsed.toFixed(1)} s
                     </span>
                   ) : null}
                 </div>
 
-                {/* Compose box */}
                 <div className="flex items-end gap-2 rounded-lg border border-[var(--cockpit-border)] bg-[var(--cockpit-surface)] p-2 shadow-sm">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    accept="text/*,.css,.csv,.diff,.html,.js,.json,.jsx,.log,.md,.patch,.py,.sh,.sql,.toml,.ts,.tsx,.txt,.xml,.yaml,.yml"
+                    onChange={(e) => void attachFiles(e.target.files)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={streaming || attachments.length >= MAX_ATTACHMENTS}
+                    aria-label="Attach files"
+                    title="Attach files"
+                    className="mb-1 rounded-md border border-[var(--cockpit-border)] p-2 text-neutral-500 hover:bg-[var(--cockpit-surface-muted)] hover:text-neutral-900 disabled:opacity-40 dark:text-neutral-400 dark:hover:text-neutral-100"
+                  >
+                    <PaperclipIcon />
+                  </button>
                   <textarea
                     ref={composerRef}
-                    className={`flex-1 resize-none bg-transparent border-0 outline-0 px-2 py-1 max-h-48 ${
-                      mode === "code" ? "font-mono text-sm" : "text-sm"
-                    } text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-400`}
+                    className={`max-h-48 flex-1 resize-none border-0 bg-transparent px-2 py-1 outline-0 ${
+                      activeMode === "code" ? "font-mono text-sm" : "text-sm"
+                    } text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100`}
                     rows={Math.min(8, Math.max(2, draft.split("\n").length))}
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => updateDraft(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
@@ -516,16 +610,16 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                       }
                     }}
                     placeholder={
-                      mode === "code"
-                        ? "Ask a code question…  (Enter sends, Shift+Enter newline)"
-                        : "Type a message…  (Enter sends, Shift+Enter newline)"
+                      activeMode === "code"
+                        ? "Ask a code question...  (Enter sends, Shift+Enter newline)"
+                        : "Type a message...  (Enter sends, Shift+Enter newline)"
                     }
                     disabled={streaming}
                   />
                   <button
                     type="button"
                     onClick={sendMessage}
-                    disabled={streaming || !draft.trim()}
+                    disabled={streaming || (!draft.trim() && attachments.length === 0)}
                     aria-label={streaming ? "Streaming" : "Send"}
                     className="rounded-md bg-neutral-900 p-2 text-white hover:opacity-90 disabled:opacity-40 dark:bg-white dark:text-neutral-900"
                   >
@@ -533,9 +627,34 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
                   </button>
                 </div>
 
-                {/* Token counter (Feature 5) */}
+                {attachments.length > 0 ? (
+                  <ul className="mt-2 flex flex-wrap gap-2">
+                    {attachments.map((file) => (
+                      <li
+                        key={file.id}
+                        className="flex max-w-full items-center gap-2 rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface-muted)] px-2 py-1 text-xs text-neutral-700 dark:text-neutral-200"
+                      >
+                        <span className="truncate font-mono" title={file.name}>
+                          {file.name}
+                        </span>
+                        <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
+                          {formatBytes(file.size)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(file.id)}
+                          aria-label={`Remove ${file.name}`}
+                          className="shrink-0 rounded px-1 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                        >
+                          x
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
                 <div className="mt-2 flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-                  <div className="flex-1 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
                     <div
                       className={`h-full ${tokenColor} transition-all`}
                       style={{ width: `${tokenPct}%` }}
@@ -550,14 +669,86 @@ export function ChatShell({ mode }: { mode: "chat" | "code" }) {
           </>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center text-neutral-500 dark:text-neutral-400">
-            <div>Select a conversation or start a new one.</div>
-            <button type="button" onClick={newConversation} className="cockpit-button cockpit-button-primary">
-              New conversation
+            <div>Select a {activeMode} conversation or start a new one.</div>
+            <button
+              type="button"
+              onClick={() => newConversation()}
+              className="cockpit-button cockpit-button-primary"
+            >
+              New {activeMode} conversation
             </button>
           </div>
         )}
       </section>
     </main>
+  );
+}
+
+function ConversationSection({
+  mode,
+  label,
+  conversations,
+  selectedId,
+  active,
+  onActivate,
+  onNew,
+  onSelect,
+}: {
+  mode: ChatMode;
+  label: string;
+  conversations: ConversationSummary[];
+  selectedId: number | null;
+  active: boolean;
+  onActivate: () => void;
+  onNew: () => void;
+  onSelect: (id: number) => void;
+}) {
+  return (
+    <section className="flex min-h-0 flex-1 flex-col border-b border-neutral-800">
+      <div className="flex items-center gap-2 px-3 py-3">
+        <button
+          type="button"
+          onClick={onActivate}
+          className={`rounded-md px-2 py-1 text-xs font-semibold uppercase ${
+            active
+              ? "bg-white text-neutral-950"
+              : "bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+          }`}
+        >
+          {label}
+        </button>
+        <button
+          type="button"
+          onClick={onNew}
+          className="ml-auto rounded-md bg-white px-2.5 py-1.5 text-xs font-semibold text-neutral-950 hover:bg-neutral-200"
+        >
+          New
+        </button>
+      </div>
+      <ul className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        {conversations.length === 0 ? (
+          <li className="px-3 py-2 text-xs text-neutral-500">No {mode} conversations</li>
+        ) : null}
+        {conversations.map((c) => (
+          <li key={c.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(c.id)}
+              className={`w-full rounded-md px-3 py-2 text-left text-sm transition ${
+                selectedId === c.id && active
+                  ? "bg-neutral-800 ring-1 ring-neutral-700"
+                  : "hover:bg-neutral-900"
+              }`}
+            >
+              <div className="truncate font-medium">{c.title ?? `Conversation #${c.id}`}</div>
+              <div className="truncate text-xs text-neutral-400">
+                {c.model ?? "-"} · {c.message_count} msgs
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -707,6 +898,39 @@ function LoadingIcon() {
       <path d="M21 12a9 9 0 1 1-6.22-8.56" />
     </svg>
   );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m21.44 11.05-8.49 8.49a6 6 0 0 1-8.49-8.49l8.49-8.49a4 4 0 0 1 5.66 5.66l-8.49 8.49a2 2 0 1 1-2.83-2.83l8.49-8.49" />
+    </svg>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function buildMessageContent(draft: string, attachments: ComposerAttachment[]): string {
+  const trimmed = draft.trim();
+  if (attachments.length === 0) return draft;
+  const parts = trimmed ? [trimmed] : [];
+  parts.push(
+    [
+      "Attached files:",
+      ...attachments.map((file) =>
+        [
+          `--- ${file.name} (${file.type ?? "text/plain"}, ${formatBytes(file.size)}) ---`,
+          file.content,
+          `--- end ${file.name} ---`,
+        ].join("\n"),
+      ),
+    ].join("\n\n"),
+  );
+  return parts.join("\n\n");
 }
 
 // Sprint 6 — workspace file drawer for the Code page sidebar.

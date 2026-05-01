@@ -104,6 +104,9 @@ class ModelConfig(Base):
 
     model: Mapped[str] = mapped_column(String, primary_key=True)
     placement: Mapped[str] = mapped_column(String, nullable=False, default="on_demand")
+    keep_alive_mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="default", server_default="default"
+    )
     keep_alive_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     num_ctx_default: Mapped[int | None] = mapped_column(Integer, nullable=True)
     single_flight: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -114,9 +117,26 @@ class ModelConfig(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "placement IN ('on_demand', 'gpu0', 'gpu1', 'gpu2', 'gpu3', 'multi_gpu', 'available')",
-            name="ck_model_config_placement",
+            "keep_alive_mode IN ('default', 'finite', 'permanent', 'unload')",
+            name="ck_model_config_keep_alive_mode",
         ),
+    )
+
+
+class ModelMetadata(Base):
+    __tablename__ = "model_metadata"
+
+    model: Mapped[str] = mapped_column(String, primary_key=True)
+    parameter_size: Mapped[str | None] = mapped_column(String, nullable=True)
+    quantization_level: Mapped[str | None] = mapped_column(String, nullable=True)
+    architecture_context_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capabilities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    release_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    release_date_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    registry_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    local_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    metadata_refreshed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.current_timestamp()
     )
 
 
@@ -133,6 +153,10 @@ class ModelPerf(Base):
     throughput_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_ctx_observed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gpu_layout_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    placement_tested: Mapped[str | None] = mapped_column(String, nullable=True)
+    gpu_count_at_test: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    num_ctx_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    keep_alive_used: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
