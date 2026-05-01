@@ -2,9 +2,7 @@
 
 import { useEffect } from "react";
 
-import { AppHeader } from "@/components/AppHeader";
-import { ChatShell } from "@/components/ChatShell";
-import { hasAtLeast, useAuthStore } from "@/lib/auth-store";
+import { useAuthStore } from "@/lib/auth-store";
 
 export default function CodePage() {
   const { me, loading } = useAuthStore();
@@ -19,23 +17,12 @@ export default function CodePage() {
       window.location.replace("/change-password/");
       return;
     }
-    if (!hasAtLeast(me.role, "code")) {
-      window.location.replace("/chat/");
-    }
+    window.location.replace("/chat/");
   }, [me, loading]);
 
-  if (loading || !me || !hasAtLeast(me.role, "code")) {
-    return (
-      <main className="flex-1 flex items-center justify-center text-neutral-500">
-        Loading…
-      </main>
-    );
-  }
-
   return (
-    <>
-      <AppHeader />
-      <ChatShell mode="code" />
-    </>
+    <main className="flex-1 flex items-center justify-center text-neutral-500">
+      Loading...
+    </main>
   );
 }
