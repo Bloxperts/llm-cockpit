@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from cockpit.ports.llm_chat import (
     ChatChunk,
     LoadedModel,
     OllamaModelNotFound,
+    OllamaResponseError,
     OllamaUnreachableError,
 )
 from cockpit.schemas import DashboardSnapshot
@@ -51,6 +52,7 @@ from cockpit.services.metrics import (
     _model_state_status,
     assemble_dashboard_snapshot,
 )
+from cockpit.services.recommendations import score_recommendations
 from cockpit.services.users import hash_password
 
 # --- Fixtures -------------------------------------------------------------
@@ -938,11 +940,86 @@ def test_perf_test_emits_stage_sequence_and_writes_perf_row(settings: Settings, 
             row = rows[-1]
             assert row.model == "m"
             assert row.cold_load_seconds is not None
+            assert row.warm_load_seconds is not None
             assert row.throughput_tps is not None
+            assert row.benchmark_profile in {"gpu0", "gpu1", "multi_gpu", "on_demand"}
             audits = list(
                 session.execute(select(AdminAudit).where(AdminAudit.action == "model_perf_test")).scalars()
             )
-            assert len(audits) == 1
+            assert len(audits) == 4
+    finally:
+        engine.dispose()
+
+
+def test_perf_test_persists_profile_error_note(settings: Settings, seeded_users: dict) -> None:
+    class FailingProfileChat(FakeLLMChat):
+        async def chat_stream(self, **kwargs):
+            self._record("chat_stream", **kwargs)
+            raise OllamaResponseError(500, "profile exploded")
+            yield  # pragma: no cover
+
+    chat = FailingProfileChat(models=[model_info("m")], known_models={"m"})
+    client = _build_client(
+        settings,
+        chat=chat,
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]),
+        skip_samplers=True,
+    )
+    with client:
+        _seed_gpu_state(client, gpu_count=1)
+        _login_admin(client, seeded_users)
+        with client.stream(
+            "POST",
+            "/api/admin/ollama/models/m/perf-test",
+            json={"contexts": [4096], "profiles": ["gpu0"]},
+        ) as r:
+            assert r.status_code == 200
+            events = list(_iter_sse_events(r))
+            assert any(event == "error" for event, _payload in events)
+
+    engine = make_engine(settings.db_url)
+    factory = make_session_factory(engine)
+    try:
+        with factory() as session:
+            row = session.execute(select(ModelPerf).where(ModelPerf.model == "m")).scalar_one()
+            assert row.benchmark_profile == "gpu0"
+            assert row.notes is not None
+            assert "profile failed" in row.notes
+    finally:
+        engine.dispose()
+
+
+def test_perf_test_retests_only_requested_profile(settings: Settings, seeded_users: dict) -> None:
+    chat = FakeLLMChat(models=[model_info("m")], known_models={"m"})
+    client = _build_client(
+        settings,
+        chat=chat,
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0), gpu_snapshot(1)]),
+        skip_samplers=True,
+    )
+    with client:
+        _seed_gpu_state(client, gpu_count=2)
+        _login_admin(client, seeded_users)
+        with client.stream(
+            "POST",
+            "/api/admin/ollama/models/m/perf-test",
+            json={"contexts": [4096], "profiles": ["gpu1"]},
+        ) as r:
+            assert r.status_code == 200
+            events = list(_iter_sse_events(r))
+
+    profile_events = [payload["profile"] for event, payload in events if event == "profile"]
+    assert profile_events == ["gpu1"]
+    result = next(payload for event, payload in events if event == "result")
+    assert [row["benchmark_profile"] for row in result["profiles"]] == ["gpu1"]
+
+    engine = make_engine(settings.db_url)
+    factory = make_session_factory(engine)
+    try:
+        with factory() as session:
+            rows = list(session.execute(select(ModelPerf).where(ModelPerf.model == "m")).scalars())
+            assert len(rows) == 1
+            assert rows[0].benchmark_profile == "gpu1"
     finally:
         engine.dispose()
 
@@ -1326,6 +1403,202 @@ def test_perf_test_with_prior_on_demand_placement_drops_after(settings: Settings
                     if "name" in payload:
                         stages.append(payload["name"])
             assert "restore" in stages
+
+
+def test_dashboard_snapshot_exposes_latest_perf_per_benchmark_profile(
+    session_factory: sessionmaker,
+) -> None:
+    state = ModelStateSamplerState(available_models=[model_info("m")])
+    gpu_state = GpuSamplerState(last_snapshots=[gpu_snapshot(0), gpu_snapshot(1)])
+    with session_factory() as session:
+        session.add(
+            ModelPerf(
+                model="m",
+                cold_load_seconds=3.0,
+                warm_load_seconds=0.4,
+                throughput_tps=30.0,
+                max_ctx_observed=16384,
+                benchmark_profile="gpu0",
+                placement_tested="gpu0",
+            )
+        )
+        session.add(
+            ModelPerf(
+                model="m",
+                cold_load_seconds=4.0,
+                warm_load_seconds=0.5,
+                throughput_tps=40.0,
+                max_ctx_observed=32768,
+                benchmark_profile="multi_gpu",
+                placement_tested="multi_gpu",
+            )
+        )
+        session.commit()
+
+        payload = assemble_dashboard_snapshot(
+            session=session,
+            gpu_state=gpu_state,
+            model_state=state,
+            now=1.0,
+        )
+
+    profiles = payload["models"][0]["benchmark_profiles"]
+    assert {p["benchmark_profile"] for p in profiles} == {"gpu0", "multi_gpu"}
+    assert payload["models"][0]["metrics"]["warm_load_seconds"] in {0.4, 0.5}
+    assert all(p["recommendations"] for p in profiles)
+    chat_rec = next(r for r in profiles[0]["recommendations"] if r["use_case"] == "chat")
+    assert {"score", "confidence", "reasons", "warnings"} <= set(chat_rec)
+
+
+def test_dashboard_snapshot_exposes_benchmark_history_staleness_and_drift(
+    session_factory: sessionmaker,
+) -> None:
+    state = ModelStateSamplerState(available_models=[model_info("m")])
+    gpu_state = GpuSamplerState(last_snapshots=[gpu_snapshot(0)])
+    older = datetime.now(UTC) - timedelta(days=40)
+    latest = datetime.now(UTC) - timedelta(days=35)
+    with session_factory() as session:
+        session.add(
+            ModelPerf(
+                model="m",
+                measured_at=older,
+                cold_load_seconds=10.0,
+                warm_load_seconds=1.0,
+                throughput_tps=40.0,
+                max_ctx_observed=32768,
+                benchmark_profile="gpu0",
+                placement_tested="gpu0",
+            )
+        )
+        session.add(
+            ModelPerf(
+                model="m",
+                measured_at=latest,
+                cold_load_seconds=16.0,
+                warm_load_seconds=1.8,
+                throughput_tps=25.0,
+                max_ctx_observed=16384,
+                benchmark_profile="gpu0",
+                placement_tested="gpu0",
+                notes="partial run: context probe stopped early",
+            )
+        )
+        session.commit()
+
+        payload = assemble_dashboard_snapshot(
+            session=session,
+            gpu_state=gpu_state,
+            model_state=state,
+            now=1.0,
+        )
+
+    profile = payload["models"][0]["benchmark_profiles"][0]
+    assert profile["staleness"] == "old"
+    assert profile["is_stale"] is True
+    assert profile["drift_status"] == "warning"
+    assert profile["trend_status"] == "unknown"
+    assert profile["profile_status"] == "success"
+    assert profile["data_quality"] in {"complete", "uncertain"}
+    assert profile["retest_recommended"] is True
+    assert len(profile["history"]) == 2
+    assert any("tokens/s" in signal for signal in profile["drift_signals"])
+    assert any("max context fell" in signal for signal in profile["drift_signals"])
+    rec = next(r for r in profile["recommendations"] if r["use_case"] == "chat")
+    assert rec["confidence"] == "low"
+    assert any("old" in warning for warning in rec["warnings"])
+    assert any("tokens/s" in warning for warning in rec["warnings"])
+
+
+def test_dashboard_snapshot_trend_uses_recent_history_median(
+    session_factory: sessionmaker,
+) -> None:
+    state = ModelStateSamplerState(available_models=[model_info("m")])
+    gpu_state = GpuSamplerState(last_snapshots=[gpu_snapshot(0)])
+    now = datetime.now(UTC)
+    runs = [
+        (now - timedelta(days=4), 40.0, 1.1, 8.0, 32768),
+        (now - timedelta(days=3), 42.0, 1.0, 8.5, 32768),
+        (now - timedelta(days=2), 39.0, 1.2, 8.0, 32768),
+        (now - timedelta(days=1), 24.0, 2.2, 14.0, 16384),
+    ]
+    with session_factory() as session:
+        for measured_at, tps, warm, cold, ctx in runs:
+            session.add(
+                ModelPerf(
+                    model="m",
+                    measured_at=measured_at,
+                    cold_load_seconds=cold,
+                    warm_load_seconds=warm,
+                    throughput_tps=tps,
+                    max_ctx_observed=ctx,
+                    benchmark_profile="gpu0",
+                    placement_tested="gpu0",
+                    gpu_layout_json=json.dumps({"gpu0_vram_growth_mb": 1000}),
+                )
+            )
+        session.commit()
+
+        payload = assemble_dashboard_snapshot(
+            session=session,
+            gpu_state=gpu_state,
+            model_state=state,
+            now=1.0,
+        )
+
+    profile = payload["models"][0]["benchmark_profiles"][0]
+    assert profile["trend_status"] == "warning"
+    assert profile["trends"]["throughput_tps"]["direction"] == "down"
+    assert profile["trends"]["warm_load_seconds"]["direction"] == "up"
+    assert any(
+        "trend" in warning
+        for rec in profile["recommendations"]
+        for warning in rec["warnings"]
+    )
+
+
+def test_recommendation_scoring_is_explainable_and_confidence_aware() -> None:
+    recs = score_recommendations(
+        model_name="qwen3-coder:30b",
+        tag="code",
+        metadata={
+            "architecture_context_length": 65536,
+            "capabilities": ["tools"],
+        },
+        metrics={
+            "throughput_tps": 32.0,
+            "warm_load_seconds": 1.2,
+            "cold_load_seconds": 8.0,
+            "max_ctx_observed": 65536,
+            "benchmark_profile": "multi_gpu",
+            "gpu_layout_diff": {"gpu0_vram_growth_mb": 8000, "gpu1_vram_growth_mb": 7000},
+        },
+        size_bytes=16 * 1024**3,
+    )
+    by_case = {r["use_case"]: r for r in recs}
+    assert by_case["code"]["score"] >= 70
+    assert by_case["code"]["confidence"] in {"medium", "high"}
+    assert any("model tag" in reason for reason in by_case["code"]["reasons"])
+    assert by_case["multi_gpu"]["score"] >= 70
+    assert any("multiple GPUs" in reason for reason in by_case["multi_gpu"]["reasons"])
+
+
+def test_recommendation_scoring_marks_missing_data_insufficient() -> None:
+    recs = score_recommendations(
+        model_name="tiny",
+        tag=None,
+        metadata={},
+        metrics={
+            "throughput_tps": None,
+            "warm_load_seconds": None,
+            "cold_load_seconds": None,
+            "max_ctx_observed": None,
+            "benchmark_profile": "on_demand",
+            "notes": "profile failed: upstream timeout",
+        },
+    )
+    assert all(r["confidence"] == "insufficient" for r in recs)
+    assert all(r["score"] <= 25 for r in recs)
+    assert any("tokens/s not measured" in warning for warning in recs[0]["warnings"])
 
 
 def test_detect_main_gpu_actual_returns_none_for_empty_telemetry() -> None:
