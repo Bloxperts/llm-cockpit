@@ -47,6 +47,11 @@
   are created. Remaining blocker is PyPI/TestPyPI account setup: add pending
   publisher for owner `Bloxperts`, repo `llm-cockpit`, workflow
   `testpypi.yml`, environment `testpypi`.
+- 2026-05-02: GitHub Actions TestPyPI run `25252987480` passed setup,
+  frontend build, package build, and `twine check`, then failed at publish with
+  `invalid-publisher`. The OIDC claims matched the intended config:
+  `repo:Bloxperts/llm-cockpit:environment:testpypi` and workflow
+  `.github/workflows/testpypi.yml@refs/heads/develop`.
 
 ---
 
