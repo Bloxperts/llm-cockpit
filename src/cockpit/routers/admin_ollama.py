@@ -424,7 +424,10 @@ async def place_model(
                         before = None
 
                     try:
-                        await _warm_up(chat, model, options)
+                        if should_be_loaded:
+                            await _warm_up(chat, model, options)
+                        else:
+                            await _drop_model(chat, model)
                     except OllamaModelNotFound:
                         db.rollback()
                         raise HTTPException(404, detail="model_not_found")
@@ -742,7 +745,7 @@ async def refresh_model_metadata(
 
 
 async def _drop_model(chat: LLMChat, model: str) -> None:
-    """Issue a one-shot generate with keep_alive=0 to drop the model.
+    """Issue a one-shot chat unload with keep_alive=0 to drop the model.
 
     Embedding-only models (e.g. nomic-embed-text) return HTTP 400
     "does not support chat". Treat that as a successful no-op — the model
@@ -751,12 +754,16 @@ async def _drop_model(chat: LLMChat, model: str) -> None:
     try:
         async for _chunk in chat.chat_stream(
             model=model,
-            messages=[{"role": "user", "content": " "}],
+            messages=[],
             options={"keep_alive": 0},
         ):
             break
-    except (OllamaModelNotFound, OllamaResponseError):
-        # Already gone, or model doesn't support chat (embedding-only).
+    except OllamaResponseError as exc:
+        if exc.status == 400 and "does not support chat" in exc.body.lower():
+            return
+        raise
+    except OllamaModelNotFound:
+        # Already gone.
         return
 
 

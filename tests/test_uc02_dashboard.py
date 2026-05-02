@@ -581,8 +581,9 @@ def test_place_on_demand_sends_keep_alive_zero(settings: Settings, seeded_users:
         )
     assert r.status_code == 200
     assert r.json()["applied"]["keep_alive_seconds"] == 0
-    warm = chat.calls_of("chat_stream")[0]
-    assert warm["options"]["keep_alive"] == 0
+    unload = chat.calls_of("chat_stream")[0]
+    assert unload["messages"] == []
+    assert unload["options"]["keep_alive"] == 0
 
 
 def test_place_invalid_placement_returns_422(settings: Settings, seeded_users: dict) -> None:

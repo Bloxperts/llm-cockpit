@@ -148,8 +148,11 @@ class OllamaLLMChat:
             OllamaStreamAbortedError — stream closed before `done: true`.
         """
         body: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
-        if options:
-            body["options"] = options
+        request_options = dict(options or {})
+        if "keep_alive" in request_options:
+            body["keep_alive"] = request_options.pop("keep_alive")
+        if request_options:
+            body["options"] = request_options
 
         try:
             async with self._client.stream("POST", "/api/chat", json=body) as resp:
