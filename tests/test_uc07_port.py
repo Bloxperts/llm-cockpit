@@ -197,6 +197,8 @@ async def test_chat_stream_yields_deltas_and_final_chunk() -> None:
         body = json.loads(request.content)
         assert body["model"] == "gemma3:27b"
         assert body["stream"] is True
+        assert body["keep_alive"] == "5m"
+        assert "options" not in body
         return _ndjson_response(200, ndjson)
 
     adapter = _adapter_against(handler)
