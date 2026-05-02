@@ -31,6 +31,7 @@ from sse_starlette.sse import EventSourceResponse
 from cockpit.adapters.ollama_catalog import OllamaCatalogUnavailable, search_ollama_catalog
 from cockpit.deps import get_chat_factory, get_session, get_telemetry_factory
 from cockpit.models import (
+    AdminAudit,
     Message,
     ModelConfig,
     ModelMetadata,
@@ -161,6 +162,7 @@ def _options_for_placement(
     keep_alive_mode: str | None = None,
     keep_alive_seconds: int | None = None,
     num_ctx_default: int | None = None,
+    main_gpu_override: int | None = None,
 ) -> dict[str, Any]:
     """UC-02 §placement transition table.
 
@@ -177,7 +179,7 @@ def _options_for_placement(
         keep_alive_seconds=keep_alive_seconds,
     )
     if placement.startswith("gpu") and placement != "multi_gpu":
-        gpu_idx = int(placement[3:])
+        gpu_idx = main_gpu_override if main_gpu_override is not None else int(placement[3:])
         options: dict[str, Any] = {"keep_alive": keep_alive, "main_gpu": gpu_idx}
         if num_ctx_default is not None:
             options["num_ctx"] = num_ctx_default
@@ -195,6 +197,55 @@ def _expected_main_gpu(placement: str) -> int | None:
     if placement.startswith("gpu") and placement != "multi_gpu":
         return int(placement[3:])
     return None
+
+
+def _ollama_main_gpu_for_physical(session: Session, physical_gpu: int | None, gpu_count: int) -> int | None:
+    """Translate dashboard/nvidia-smi GPU labels to Ollama's main_gpu index.
+
+    Some hosts expose CUDA/Ollama device order differently from nvidia-smi.
+    Placement audit rows record both the requested Ollama main_gpu and the
+    physical GPU whose VRAM actually grew. Use a complete, bijective recent
+    mapping when available; otherwise keep identity behavior.
+    """
+    if physical_gpu is None or gpu_count <= 1:
+        return physical_gpu
+
+    rows = (
+        session.execute(
+            select(AdminAudit.details_json)
+            .where(AdminAudit.action == "model_place")
+            .where(AdminAudit.details_json.is_not(None))
+            .order_by(AdminAudit.id.desc())
+            .limit(50)
+        )
+        .scalars()
+        .all()
+    )
+    ollama_to_physical: dict[int, int] = {}
+    for raw in rows:
+        try:
+            details = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            continue
+        applied = details.get("applied") if isinstance(details, dict) else None
+        if not isinstance(applied, dict):
+            continue
+        ollama_gpu = applied.get("main_gpu")
+        actual_gpu = details.get("main_gpu_actual")
+        if not isinstance(ollama_gpu, int) or not isinstance(actual_gpu, int):
+            continue
+        if not (0 <= ollama_gpu < gpu_count and 0 <= actual_gpu < gpu_count):
+            continue
+        existing = ollama_to_physical.get(ollama_gpu)
+        if existing is not None and existing != actual_gpu:
+            return physical_gpu
+        ollama_to_physical[ollama_gpu] = actual_gpu
+
+    expected = set(range(gpu_count))
+    if set(ollama_to_physical) != expected or set(ollama_to_physical.values()) != expected:
+        return physical_gpu
+    physical_to_ollama = {actual: ollama for ollama, actual in ollama_to_physical.items()}
+    return physical_to_ollama.get(physical_gpu, physical_gpu)
 
 
 def _placement_should_be_loaded(placement: str) -> bool:
@@ -314,6 +365,9 @@ def _upsert_model_config(
         cfg.keep_alive_mode = "unload"
     elif keep_alive_mode is not None:
         cfg.keep_alive_mode = keep_alive_mode
+    elif cfg.keep_alive_mode == "unload":
+        cfg.keep_alive_mode = "default"
+        cfg.keep_alive_seconds = None
     if keep_alive_seconds is not None:
         cfg.keep_alive_seconds = keep_alive_seconds
         if keep_alive_mode is None:
@@ -383,13 +437,15 @@ async def place_model(
         )
 
     _validate_keep_alive(body.keep_alive_mode, body.keep_alive_seconds)
+    expected_main_gpu = _expected_main_gpu(placement)
+    ollama_main_gpu = _ollama_main_gpu_for_physical(db, expected_main_gpu, gpu_count)
     options = _options_for_placement(
         placement,
         keep_alive_mode=body.keep_alive_mode,
         keep_alive_seconds=body.keep_alive_seconds,
         num_ctx_default=body.num_ctx_default,
+        main_gpu_override=ollama_main_gpu,
     )
-    expected_main_gpu = _expected_main_gpu(placement)
     should_be_loaded = _placement_should_be_loaded(placement)
 
     # UPSERT before the Ollama call so the generated options are persisted on
