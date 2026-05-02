@@ -23,19 +23,27 @@ import {
   isWarmColumn,
 } from "@/lib/dashboard-types";
 
-type DashboardTab = "live" | "history";
+type DashboardTab = "live" | "benchmarks" | "history";
 type PerfStatus = "idle" | "running" | "result" | "cancelled" | "error";
 type ModelFilter = "all" | "loaded" | "missing_perf" | "warnings";
 
 type PerfResult = {
   cold_load_seconds?: number | null;
+  warm_load_seconds?: number | null;
   throughput_tps?: number | null;
   max_ctx_observed?: number | null;
+  benchmark_profile?: string | null;
+  placement_tested?: string | null;
   gpu_layout_diff?: Record<string, number>;
+  notes?: string | null;
+  profiles?: PerfResult[];
 };
 
 type PerfRunState = {
   model: string;
+  profiles: string[];
+  currentProfile: string | null;
+  completedProfiles: PerfResult[];
   status: PerfStatus;
   stage: string;
   elapsedMs: number;
@@ -161,8 +169,8 @@ export default function DashboardPage() {
   ) {
     const previous = snapshot;
     const current = snapshot?.models.find((m) => m.name === model)?.config?.placement ?? "on_demand";
-    if (snapshot && placement === "multi_gpu" && current !== "multi_gpu") {
-      const warning = crossGpuEvictionWarning(snapshot, model);
+    if (snapshot && placement !== current) {
+      const warning = placementEvictionWarning(snapshot, model, placement);
       if (warning && !window.confirm(warning)) {
         return;
       }
@@ -223,10 +231,13 @@ export default function DashboardPage() {
     }
   }
 
-  async function onPerfTest(model: string) {
+  async function onPerfTest(model: string, profiles: string[] = []) {
     const started = Date.now();
     setPerfRun({
       model,
+      profiles,
+      currentProfile: profiles[0] ?? null,
+      completedProfiles: [],
       status: "running",
       stage: "starting",
       elapsedMs: 0,
@@ -240,7 +251,7 @@ export default function DashboardPage() {
     try {
       for await (const ev of streamSse(
         `/api/admin/ollama/models/${encodeURIComponent(model)}/perf-test`,
-        { method: "POST", body: JSON.stringify({}) },
+        { method: "POST", body: JSON.stringify(profiles.length ? { profiles } : {}) },
       )) {
         const receivedAt = Date.now();
         let data: Record<string, unknown> = {};
@@ -260,6 +271,14 @@ export default function DashboardPage() {
               lastEventAt: receivedAt,
             };
           }
+          if (ev.event === "profile") {
+            return {
+              ...prev,
+              status: "running",
+              currentProfile: String(data.profile ?? prev.currentProfile ?? ""),
+              lastEventAt: receivedAt,
+            };
+          }
           if (ev.event === "progress" || ev.event === "heartbeat") {
             return {
               ...prev,
@@ -274,11 +293,13 @@ export default function DashboardPage() {
             };
           }
           if (ev.event === "result") {
+            const result = data as PerfResult;
             return {
               ...prev,
               status: "result",
               stage: "complete",
-              result: data as PerfResult,
+              result,
+              completedProfiles: result.profiles ?? prev.completedProfiles,
               lastEventAt: receivedAt,
               cancelling: false,
             };
@@ -307,6 +328,7 @@ export default function DashboardPage() {
           return { ...prev, lastEventAt: receivedAt };
         });
       }
+      await refreshSnapshot();
     } catch (e) {
       if (e instanceof ApiError) {
         setPerfRun((prev) =>
@@ -449,6 +471,16 @@ export default function DashboardPage() {
           >
             History
           </button>
+          <button
+            onClick={() => setTab("benchmarks")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium ${
+              tab === "benchmarks"
+                ? "bg-neutral-950 text-white dark:bg-white dark:text-neutral-950"
+                : "text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            }`}
+          >
+            Benchmarks
+          </button>
           </div>
         </div>
 
@@ -544,6 +576,12 @@ export default function DashboardPage() {
               </section>
             </DndContext>
           </>
+        ) : tab === "benchmarks" ? (
+          <BenchmarkDecisionView
+            snapshot={snapshot}
+            perfRun={perfRun}
+            onRetest={(model, profile) => onPerfTest(model, [profile])}
+          />
         ) : (
           <DashboardHistory />
         )}
@@ -678,7 +716,7 @@ function LoadModelDialog({
           <div>
             <h2 className="text-lg font-semibold text-neutral-950 dark:text-white">Load model</h2>
             <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-              Search Ollama's model catalog. Local models are hidden from this list.
+              Search Ollama&apos;s model catalog. Local models are hidden from this list.
             </p>
           </div>
           <button type="button" onClick={onClose} className="cockpit-button px-3 py-1.5 text-sm">
@@ -860,6 +898,408 @@ function crossGpuEvictionWarning(snapshot: DashboardSnapshot, movedModel: string
   ].join("\n");
 }
 
+function placementEvictionWarning(snapshot: DashboardSnapshot, movedModel: string, placement: string): string | null {
+  if (placement === "multi_gpu") return crossGpuEvictionWarning(snapshot, movedModel);
+  if (!/^gpu\d+$/.test(placement)) return null;
+  const gpu = Number(placement.slice(3));
+  const target = snapshot.gpus.find((g) => g.index === gpu);
+  const model = snapshot.models.find((m) => m.name === movedModel);
+  if (!target || !model) {
+    return [
+      `Move ${movedModel} to ${placement.toUpperCase()}?`,
+      "",
+      "GPU capacity is uncertain because telemetry is incomplete. Ollama may unload existing models if it needs VRAM.",
+      "",
+      "Continue?",
+    ].join("\n");
+  }
+  const freeMb = target.vram_total_mb - target.vram_used_mb;
+  const modelSizeMb = model.size_bytes / 1024 / 1024;
+  const residents = snapshot.models
+    .filter((m) => m.name !== movedModel)
+    .filter((m) => m.config?.placement === placement)
+    .filter((m) => m.actual.loaded || m.config.keep_alive_mode !== "unload")
+    .map((m) => `${m.name}${m.actual.loaded ? "" : " (configured warm)"}`);
+  if (modelSizeMb <= freeMb * 0.85 && residents.length === 0) return null;
+  return [
+    `Move ${movedModel} to ${placement.toUpperCase()}?`,
+    "",
+    `Free VRAM on ${placement.toUpperCase()} is about ${(freeMb / 1024).toFixed(1)} GB; model size is ${fmtBytes(model.size_bytes)} before runtime overhead.`,
+    residents.length ? "Potentially affected warm models:" : "No warm resident model is known, but the fit estimate is tight.",
+    residents.join(", "),
+    "",
+    "Ollama can unload existing models when VRAM is insufficient. Continue?",
+  ].filter(Boolean).join("\n");
+}
+
+type BenchmarkSort = "score" | "model" | "profile" | "tps" | "ctx" | "tested";
+type RecommendationUseCase = "chat" | "code" | "large_context" | "multi_gpu";
+
+function BenchmarkDecisionView({
+  snapshot,
+  perfRun,
+  onRetest,
+}: {
+  snapshot: DashboardSnapshot;
+  perfRun: PerfRunState | null;
+  onRetest: (model: string, profile: string) => void;
+}) {
+  const [sort, setSort] = useState<BenchmarkSort>("score");
+  const [useCase, setUseCase] = useState<RecommendationUseCase>("chat");
+  const rows = useMemo(() => {
+    const out = snapshot.models.flatMap((model) => {
+      const profiles = model.benchmark_profiles?.length
+        ? model.benchmark_profiles
+        : model.metrics
+          ? [model.metrics]
+          : [];
+      return profiles.map((metrics) => ({ model, metrics }));
+    });
+    return out.sort((a, b) => {
+      if (sort === "model") return a.model.name.localeCompare(b.model.name);
+      if (sort === "profile") return profileLabel(a.metrics).localeCompare(profileLabel(b.metrics));
+      if (sort === "tps") return (b.metrics.throughput_tps ?? -1) - (a.metrics.throughput_tps ?? -1);
+      if (sort === "ctx") return (b.metrics.max_ctx_observed ?? -1) - (a.metrics.max_ctx_observed ?? -1);
+      if (sort === "tested") return Date.parse(b.metrics.measured_at ?? "0") - Date.parse(a.metrics.measured_at ?? "0");
+      return recommendationFor(b.metrics, useCase).score - recommendationFor(a.metrics, useCase).score;
+    });
+  }, [snapshot.models, sort, useCase]);
+
+  return (
+    <section className="cockpit-panel p-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase text-neutral-600 dark:text-neutral-400">
+            Model intelligence
+          </h2>
+          <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+            Compare measured profiles and retest stale, drifting, or incomplete measurements in place.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+            Use case
+            <select
+              value={useCase}
+              onChange={(e) => setUseCase(e.target.value as RecommendationUseCase)}
+              className="cockpit-input min-h-8 text-xs"
+            >
+              <option value="chat">Chat</option>
+              <option value="code">Code</option>
+              <option value="large_context">Large context</option>
+              <option value="multi_gpu">Multi-GPU</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+            Sort
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as BenchmarkSort)}
+              className="cockpit-input min-h-8 text-xs"
+            >
+              <option value="score">Score</option>
+              <option value="model">Model</option>
+              <option value="profile">Profile</option>
+              <option value="tps">Tokens/s</option>
+              <option value="ctx">Max context</option>
+              <option value="tested">Last tested</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            <tr>
+              <th className="py-2 pr-3 text-left">Model</th>
+              <th className="px-3 py-2 text-left">Profile</th>
+              <th className="px-3 py-2 text-right">Cold</th>
+              <th className="px-3 py-2 text-right">Warm</th>
+              <th className="px-3 py-2 text-right">Tokens/s</th>
+              <th className="px-3 py-2 text-right">Max ctx</th>
+              <th className="px-3 py-2 text-left">VRAM / GPU</th>
+              <th className="px-3 py-2 text-left">Trust</th>
+              <th className="px-3 py-2 text-left">Trend</th>
+              <th className="px-3 py-2 text-left">Score</th>
+              <th className="px-3 py-2 text-left">Why</th>
+              <th className="py-2 pl-3 text-left">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length ? rows.map(({ model, metrics }) => {
+              const profile = metrics.benchmark_profile ?? metrics.placement_tested ?? "on_demand";
+              const updating = perfRun?.model === model.name && (!perfRun.profiles.length || perfRun.profiles.includes(profile));
+              const recommendation = updating
+                ? updatingRecommendation(recommendationFor(metrics, useCase))
+                : recommendationFor(metrics, useCase);
+              return (
+              <tr key={`${model.name}-${profile}-${metrics.measured_at ?? "latest"}`} className="border-t border-[var(--cockpit-border)] align-top">
+                <td className="py-2 pr-3">
+                  <div className="break-all font-medium text-neutral-900 dark:text-neutral-100">{model.name}</div>
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400">{model.metadata.parameter_size ?? "size unknown"} {model.metadata.quantization_level ?? ""}</div>
+                </td>
+                <td className="px-3 py-2">{profileLabel(metrics)}</td>
+                <td className="px-3 py-2 text-right font-mono">{fmtSeconds(metrics.cold_load_seconds)}</td>
+                <td className="px-3 py-2 text-right font-mono">{fmtSeconds(metrics.warm_load_seconds)}</td>
+                <td className="px-3 py-2 text-right font-mono">{metrics.throughput_tps?.toFixed(1) ?? "—"}</td>
+                <td className="px-3 py-2 text-right font-mono">{metrics.max_ctx_observed?.toLocaleString() ?? "—"}</td>
+                <td className="px-3 py-2 text-xs text-neutral-600 dark:text-neutral-400">{gpuHint(model, metrics)}</td>
+                <td className="px-3 py-2"><BenchmarkTrust metrics={metrics} /></td>
+                <td className="px-3 py-2"><BenchmarkTrend metrics={metrics} /></td>
+                <td className="px-3 py-2"><RecommendationScore recommendation={recommendation} /></td>
+                <td className="px-3 py-2">
+                  <RecommendationFacts recommendation={recommendation} />
+                </td>
+                <td className="py-2 pl-3 text-xs text-neutral-600 dark:text-neutral-400">
+                  <div className="font-medium text-neutral-700 dark:text-neutral-300">
+                    {metrics.measured_at ? new Date(metrics.measured_at).toLocaleString() : "—"}
+                  </div>
+                  <BenchmarkHistory metrics={metrics} />
+                  <button
+                    type="button"
+                    disabled={Boolean(perfRun)}
+                    onClick={() => onRetest(model.name, profile)}
+                    className={`mt-2 min-h-7 rounded-md border px-2 py-1 text-xs font-medium ${
+                      metrics.retest_recommended
+                        ? "border-amber-300 text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950"
+                        : "border-[var(--cockpit-border)] text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                    } disabled:opacity-50`}
+                    title={metrics.retest_reason ?? `Retest ${profileLabel(metrics)}`}
+                  >
+                    {updating ? "Updating..." : metrics.retest_recommended ? "Retest profile" : "Retest"}
+                  </button>
+                </td>
+              </tr>
+            );}) : (
+              <tr>
+                <td colSpan={12} className="py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                  No benchmark profiles yet. Run performance tests from the Live board.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function profileLabel(metrics: { benchmark_profile?: string | null; placement_tested?: string | null }) {
+  const profile = metrics.benchmark_profile ?? metrics.placement_tested ?? "on_demand";
+  return COLUMN_LABELS[profile] ?? profile.toUpperCase();
+}
+
+function fmtSeconds(value: number | null | undefined) {
+  return value == null ? "—" : `${value.toFixed(1)}s`;
+}
+
+function ageLabel(days: number | null | undefined) {
+  if (days == null) return "age unknown";
+  if (days < 1) return "today";
+  return `${Math.round(days)}d old`;
+}
+
+function BenchmarkTrust({ metrics }: { metrics: NonNullable<ModelCardPayload["metrics"]> }) {
+  const ageTone =
+    metrics.staleness === "old"
+      ? "bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+      : metrics.staleness === "stale"
+        ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+        : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
+  const driftTone =
+    metrics.drift_status === "warning"
+      ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+      : metrics.drift_status === "info"
+        ? "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+        : metrics.drift_status === "stable"
+          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+          : "bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400";
+  const driftLabel =
+    metrics.drift_status === "warning"
+      ? "drift"
+      : metrics.drift_status === "info"
+        ? "shift"
+        : metrics.drift_status;
+  return (
+    <div className="flex min-w-32 flex-col gap-1 text-xs">
+      <div className="flex flex-wrap gap-1">
+        <span className={`w-fit rounded-full px-2 py-0.5 font-semibold ${profileStatusTone(metrics.profile_status)}`}>
+          {metrics.profile_status}
+        </span>
+        <span className={`w-fit rounded-full px-2 py-0.5 font-semibold ${ageTone}`}>
+          {metrics.staleness === "fresh" ? "fresh" : metrics.staleness}
+        </span>
+        <span className={`w-fit rounded-full px-2 py-0.5 font-semibold ${driftTone}`}>
+          {driftLabel}
+        </span>
+      </div>
+      <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+        {ageLabel(metrics.age_days)}
+      </div>
+      {metrics.drift_signals?.[0] ? (
+        <div className="max-w-40 text-[11px] text-neutral-600 dark:text-neutral-400">
+          {metrics.drift_signals[0]}
+        </div>
+      ) : null}
+      {metrics.notes ? (
+        <div className="max-w-40 text-[11px] text-amber-700 dark:text-amber-300">
+          {metrics.notes}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function profileStatusTone(status: string) {
+  if (status === "success") return "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
+  if (status === "partial") return "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300";
+  if (status === "failed") return "bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300";
+  if (status === "skipped") return "bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400";
+  return "bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400";
+}
+
+function BenchmarkTrend({ metrics }: { metrics: NonNullable<ModelCardPayload["metrics"]> }) {
+  const entries = [
+    ["TPS", metrics.trends?.throughput_tps],
+    ["Warm", metrics.trends?.warm_load_seconds],
+    ["Cold", metrics.trends?.cold_load_seconds],
+    ["Ctx", metrics.trends?.max_ctx_observed],
+  ] as const;
+  const tone =
+    metrics.trend_status === "warning"
+      ? "text-amber-700 dark:text-amber-300"
+      : metrics.trend_status === "info"
+        ? "text-sky-700 dark:text-sky-300"
+        : metrics.trend_status === "stable"
+          ? "text-emerald-700 dark:text-emerald-300"
+          : "text-neutral-500 dark:text-neutral-400";
+  return (
+    <div className="min-w-32 text-xs">
+      <div className={`font-semibold ${tone}`}>{metrics.trend_status}</div>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {entries.map(([label, trend]) => (
+          <span
+            key={label}
+            className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] dark:bg-neutral-900"
+            title={trend?.pct_change == null ? "No trend baseline yet" : `${Math.round(trend.pct_change * 100)}% vs recent median`}
+          >
+            {label} {trendArrow(trend?.direction)}
+          </span>
+        ))}
+      </div>
+      {metrics.trend_signals?.[0] ? (
+        <div className="mt-1 max-w-40 text-[11px] text-neutral-600 dark:text-neutral-400">
+          {metrics.trend_signals[0]}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function trendArrow(direction: string | undefined) {
+  if (direction === "up") return "↑";
+  if (direction === "down") return "↓";
+  if (direction === "flat") return "→";
+  return "?";
+}
+
+function BenchmarkHistory({ metrics }: { metrics: NonNullable<ModelCardPayload["metrics"]> }) {
+  if (!metrics.history?.length || metrics.history.length < 2) return null;
+  return (
+    <details className="mt-1 max-w-xs">
+      <summary className="cursor-pointer select-none text-[11px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200">
+        history ({metrics.history.length})
+      </summary>
+      <div className="mt-1 overflow-hidden rounded border border-[var(--cockpit-border)]">
+        {metrics.history.map((entry, idx) => (
+          <div
+            key={`${entry.measured_at ?? "run"}-${idx}`}
+            className="grid grid-cols-[1fr_auto_auto_auto] gap-2 border-t border-[var(--cockpit-border)] px-2 py-1 first:border-t-0"
+          >
+            <span>{entry.measured_at ? new Date(entry.measured_at).toLocaleDateString() : "—"}</span>
+            <span className="font-mono">{entry.throughput_tps?.toFixed(1) ?? "—"} tps</span>
+            <span className="font-mono">{fmtSeconds(entry.cold_load_seconds)}</span>
+            <span className="font-mono">{entry.max_ctx_observed?.toLocaleString() ?? "—"}</span>
+            {entry.notes ? (
+              <span className="col-span-4 text-amber-700 dark:text-amber-300">{entry.notes}</span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function gpuHint(model: ModelCardPayload, metrics: { benchmark_profile?: string | null; gpu_layout_diff?: Record<string, number> }) {
+  const layout = Object.entries(metrics.gpu_layout_diff ?? {})
+    .filter(([, mb]) => Math.abs(mb) > 0)
+    .map(([gpu, mb]) => `${gpu.replace("_vram_growth_mb", "")}: ${mb > 0 ? "+" : ""}${mb} MB`);
+  if (layout.length) return layout.join(", ");
+  const profile = metrics.benchmark_profile ?? "on_demand";
+  if (profile === "on_demand") return model.actual.loaded ? "Currently loaded" : "No pinned GPU";
+  if (profile === "multi_gpu") return "Spans visible GPUs; may evict warm single-GPU models";
+  return `${profile.toUpperCase()} profile; verify actual placement after loading`;
+}
+
+function recommendationFor(metrics: NonNullable<ModelCardPayload["metrics"]>, useCase: RecommendationUseCase) {
+  return metrics.recommendations?.find((r) => r.use_case === useCase) ?? {
+    use_case: useCase,
+    score: 0,
+    confidence: "insufficient",
+    reasons: ["insufficient measured facts for this recommendation"],
+    warnings: ["backend scoring is unavailable for this benchmark row"],
+  };
+}
+
+function updatingRecommendation(recommendation: ReturnType<typeof recommendationFor>) {
+  return {
+    ...recommendation,
+    confidence: "updating",
+    warnings: ["profile retest is running; scores will refresh when the snapshot updates", ...recommendation.warnings],
+  };
+}
+
+function RecommendationScore({ recommendation }: { recommendation: ReturnType<typeof recommendationFor> }) {
+  const tone =
+    recommendation.confidence === "high"
+      ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+      : recommendation.confidence === "medium"
+        ? "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+        : recommendation.confidence === "low"
+          ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+          : "bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400";
+  return (
+    <div className="flex min-w-24 flex-col gap-1">
+      <span className={`w-fit rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>
+        {recommendation.score}/100
+      </span>
+      <span className="text-[11px] uppercase text-neutral-500 dark:text-neutral-400">
+        {recommendation.confidence}
+      </span>
+    </div>
+  );
+}
+
+function RecommendationFacts({ recommendation }: { recommendation: ReturnType<typeof recommendationFor> }) {
+  return (
+    <details className="max-w-sm text-xs text-neutral-600 dark:text-neutral-400">
+      <summary className="cursor-pointer select-none text-neutral-800 dark:text-neutral-200">
+        {recommendation.reasons[0] ?? "No reason available"}
+      </summary>
+      <ul className="mt-1 list-disc space-y-1 pl-4">
+        {recommendation.reasons.slice(1).map((reason) => (
+          <li key={reason}>{reason}</li>
+        ))}
+        {recommendation.warnings.map((warning) => (
+          <li key={warning} className="text-amber-700 dark:text-amber-300">
+            {warning}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 function ColumnView(props: {
   col: string;
   models: ModelCardPayload[];
@@ -1015,7 +1455,7 @@ function ModelCardView({
           keep {m.config?.keep_alive_label ?? "Default"}
         </div>
         <div className={`rounded px-2 py-1 ${ctxWarning ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300" : "bg-neutral-100 dark:bg-neutral-900"}`}>
-          ctx {configuredCtx?.toLocaleString() ?? "—"} / {safeCtx?.toLocaleString() ?? "?"}
+          ctx {configuredCtx?.toLocaleString() ?? "—"} / {safeCtx?.toLocaleString() ?? "?"} · {m.context.estimate_confidence}
         </div>
       </div>
       {m.actual.mismatch ? (
@@ -1149,6 +1589,7 @@ const PERF_STAGE_LABELS: Record<string, string> = {
   lock: "Waiting for lock",
   unload: "Unload",
   cold_load: "Cold load",
+  warm_load: "Warm load",
   throughput: "Throughput run",
   context_probe: "Context probe",
   persist: "Persist",
@@ -1188,6 +1629,11 @@ function PerfDrawer({
             <p className="text-sm text-neutral-600 dark:text-neutral-400 break-all mt-1">
               {run.model}
             </p>
+            {run.profiles.length ? (
+              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                Retesting {run.profiles.map((profile) => COLUMN_LABELS[profile] ?? profile.toUpperCase()).join(", ")}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -1217,6 +1663,32 @@ function PerfDrawer({
               {fmtElapsed(run.elapsedMs)}
             </span>
           </div>
+          {running || run.currentProfile ? (
+            <div className="rounded-md border border-[var(--cockpit-border)] bg-[var(--cockpit-surface-muted)] px-3 py-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-neutral-600 dark:text-neutral-400">Current profile</span>
+                <span className="font-mono text-neutral-900 dark:text-neutral-100">
+                  {run.currentProfile ? (COLUMN_LABELS[run.currentProfile] ?? run.currentProfile.toUpperCase()) : "All profiles"}
+                </span>
+              </div>
+              {run.profiles.length ? (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {run.profiles.map((profile) => (
+                    <span
+                      key={profile}
+                      className={`rounded px-1.5 py-0.5 text-[11px] ${
+                        profile === run.currentProfile
+                          ? "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200"
+                          : "bg-neutral-100 text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400"
+                      }`}
+                    >
+                      {COLUMN_LABELS[profile] ?? profile.toUpperCase()}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {run.tokensPerSec !== null ? (
             <div className="grid grid-cols-2 gap-3">
@@ -1253,13 +1725,21 @@ function PerfDrawer({
 
           {run.status === "result" && run.result ? (
             <div className="rounded-md border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/30 p-3 space-y-3">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <MetricTile
                   label="Cold load"
                   value={
                     run.result.cold_load_seconds == null
                       ? "—"
                       : `${run.result.cold_load_seconds.toFixed(1)} s`
+                  }
+                />
+                <MetricTile
+                  label="Warm load"
+                  value={
+                    run.result.warm_load_seconds == null
+                      ? "—"
+                      : `${run.result.warm_load_seconds.toFixed(1)} s`
                   }
                 />
                 <MetricTile
@@ -1275,6 +1755,26 @@ function PerfDrawer({
                   value={run.result.max_ctx_observed?.toLocaleString() ?? "—"}
                 />
               </div>
+              {run.result.profiles?.length ? (
+                <div>
+                  <div className="text-xs font-semibold uppercase text-neutral-500 mb-1">
+                    Profiles tested
+                  </div>
+                  <div className="space-y-1">
+                    {run.result.profiles.map((profile, idx) => (
+                      <div key={idx} className="grid grid-cols-5 gap-2 rounded bg-white/70 px-2 py-1 text-xs dark:bg-neutral-950/70">
+                        <span>{profileLabel(profile)}</span>
+                        <span className="font-mono">{fmtSeconds(profile.cold_load_seconds)}</span>
+                        <span className="font-mono">{profile.throughput_tps?.toFixed(1) ?? "—"} tps</span>
+                        <span className="font-mono">{profile.max_ctx_observed?.toLocaleString() ?? "—"} ctx</span>
+                        <span className={profile.notes ? "text-amber-700 dark:text-amber-300" : "text-neutral-500"}>
+                          {profile.notes ? "partial" : "ok"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <div>
                 <div className="text-xs font-semibold uppercase text-neutral-500 mb-1">
                   GPU layout diff

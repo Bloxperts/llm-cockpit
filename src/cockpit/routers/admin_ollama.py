@@ -79,8 +79,8 @@ LOADED_CONFIRMATION_TIMEOUT_S = 10.0
 LOADED_POLL_INTERVAL_S = 0.5
 
 # Throughput probe — ADR-005 §4 step 2.
-THROUGHPUT_PROMPT_TOKENS = 200
-THROUGHPUT_OUTPUT_TOKENS = 200
+THROUGHPUT_PROMPT_TOKENS = 700
+THROUGHPUT_OUTPUT_TOKENS = 256
 THROUGHPUT_RUNS = 3
 
 # Default context-probe ladder per the spec.
@@ -749,10 +749,19 @@ async def _drop_model(chat: LLMChat, model: str) -> None:
 async def _measure_throughput(chat: LLMChat, model: str) -> float | None:
     """ADR-005 §4 step 2 — return tokens/second from the final chunk's usage."""
     final = None
+    prompt = _synthetic_prompt(THROUGHPUT_PROMPT_TOKENS)
     async for chunk in chat.chat_stream(
         model=model,
-        messages=[{"role": "user", "content": "Count to ten."}],
-        options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Summarize the following diagnostic text in three compact paragraphs. "
+                    f"{prompt}"
+                ),
+            }
+        ],
+        options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S, "num_predict": THROUGHPUT_OUTPUT_TOKENS},
     ):
         if chunk.done:
             final = chunk
@@ -766,22 +775,65 @@ async def _measure_throughput(chat: LLMChat, model: str) -> float | None:
     return final.usage_out / (final.eval_duration_ns / 1e9)
 
 
-async def _probe_max_context(chat: LLMChat, model: str, contexts: list[int]) -> int | None:
-    """Walk the contexts list from largest to smallest. Return the first
-    that succeeds.
+def _synthetic_prompt(approx_tokens: int) -> str:
+    token = "calibration"
+    return " ".join([token] * max(1, approx_tokens))
 
-    Assumption (documented per Chris's runbook): the spec doesn't fully
-    specify the search strategy. We pick "largest-first" because users
-    typically want to know the ceiling, and a 65k probe failing fast is
-    cheap. A binary-search variant would also work; switching is local
-    to this function.
+
+def _profile_options(profile: str, *, keep_alive: int = PLACEMENT_KEEP_ALIVE_WARM_S) -> dict[str, Any]:
+    options = _options_for_placement(profile)
+    options["keep_alive"] = keep_alive
+    return options
+
+
+def _benchmark_profiles(gpu_count: int, requested: list[str] | None = None) -> list[str]:
+    allowed = _allowed_placements(gpu_count)
+    profiles = requested or allowed
+    out: list[str] = []
+    for profile in profiles:
+        normalized = _normalize_placement(profile)
+        if normalized in allowed and normalized not in out:
+            out.append(normalized)
+    return out or ["on_demand"]
+
+
+async def _probe_max_context(
+    chat: LLMChat,
+    model: str,
+    contexts: list[int],
+    *,
+    base_options: dict[str, Any] | None = None,
+) -> int | None:
+    """Try largest contexts first with a prompt sized to the requested window.
+
+    The prompt is synthetic but intentionally non-trivial: we reserve a small
+    completion budget and fill most of the requested context with predictable
+    words so failures are attributable to context pressure rather than a tiny
+    request that only sets `num_ctx`.
     """
     for ctx in sorted(contexts, reverse=True):
+        options = dict(base_options or {})
+        options.update(
+            {
+                "num_ctx": ctx,
+                "keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S,
+                "num_predict": 16,
+            }
+        )
+        probe_tokens = max(1, min(ctx - 64, ctx))
         try:
             async for chunk in chat.chat_stream(
                 model=model,
-                messages=[{"role": "user", "content": "x"}],
-                options={"num_ctx": ctx, "keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Return the word ok after reading this context probe. "
+                            f"{_synthetic_prompt(probe_tokens)}"
+                        ),
+                    }
+                ],
+                options=options,
             ):
                 if chunk.done:
                     return ctx
@@ -806,24 +858,30 @@ def _save_model_perf(
     *,
     model: str,
     cold_load_seconds: float | None,
+    warm_load_seconds: float | None,
     throughput_tps: float | None,
     max_ctx_observed: int | None,
     gpu_layout: dict[str, int],
+    benchmark_profile: str | None = None,
     placement_tested: str | None = None,
     gpu_count_at_test: int | None = None,
     num_ctx_used: int | None = None,
     keep_alive_used: str | None = None,
+    notes: str | None = None,
 ) -> ModelPerf:
     row = ModelPerf(
         model=model,
         cold_load_seconds=cold_load_seconds,
+        warm_load_seconds=warm_load_seconds,
         throughput_tps=throughput_tps,
         max_ctx_observed=max_ctx_observed,
         gpu_layout_json=json.dumps(gpu_layout) if gpu_layout else None,
+        benchmark_profile=benchmark_profile,
         placement_tested=placement_tested,
         gpu_count_at_test=gpu_count_at_test,
         num_ctx_used=num_ctx_used,
         keep_alive_used=keep_alive_used,
+        notes=notes,
     )
     session.add(row)
     session.flush()
@@ -833,7 +891,10 @@ def _save_model_perf(
 def _last_perf_row(session: Session, model: str) -> dict[str, Any] | None:
     row = (
         session.execute(
-            select(ModelPerf).where(ModelPerf.model == model).order_by(ModelPerf.measured_at.desc()).limit(1)
+            select(ModelPerf)
+            .where(ModelPerf.model == model)
+            .order_by(ModelPerf.measured_at.desc(), ModelPerf.id.desc())
+            .limit(1)
         )
         .scalars()
         .first()
@@ -845,13 +906,17 @@ def _last_perf_row(session: Session, model: str) -> dict[str, Any] | None:
         "model": row.model,
         "measured_at": row.measured_at.isoformat() if row.measured_at else None,
         "cold_load_seconds": row.cold_load_seconds,
+        "warm_load_seconds": row.warm_load_seconds,
         "throughput_tps": row.throughput_tps,
         "max_ctx_observed": row.max_ctx_observed,
+        "benchmark_profile": row.benchmark_profile or row.placement_tested or "on_demand",
         "placement_tested": row.placement_tested,
         "gpu_count_at_test": row.gpu_count_at_test,
         "num_ctx_used": row.num_ctx_used,
         "keep_alive_used": row.keep_alive_used,
         "gpu_layout_diff": json.loads(row.gpu_layout_json) if row.gpu_layout_json else {},
+        "notes": row.notes,
+        "recommendations": [],
     }
 
 
@@ -980,12 +1045,14 @@ async def _cold_load_with_events(
     state: _PerfRunState,
     result: dict[str, Any],
     result_key: str,
+    *,
+    options: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     first_byte_t: float | None = None
     stream = chat.chat_stream(
         model=model,
         messages=[{"role": "user", "content": "Reply with: ok"}],
-        options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+        options=options or {"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
     )
     agen = stream.__aiter__()
     next_task: asyncio.Task | None = None
@@ -1016,20 +1083,53 @@ async def _cold_load_with_events(
     result[result_key] = first_byte_t
 
 
+async def _warm_load_with_events(
+    chat: LLMChat,
+    model: str,
+    state: _PerfRunState,
+    result: dict[str, Any],
+    result_key: str,
+    *,
+    options: dict[str, Any] | None = None,
+) -> AsyncIterator[dict[str, str]]:
+    async for event in _cold_load_with_events(
+        chat,
+        model,
+        state,
+        result,
+        result_key,
+        options=options or {"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+    ):
+        yield event
+
+
 async def _measure_throughput_with_events(
     chat: LLMChat,
     model: str,
     state: _PerfRunState,
     result: dict[str, Any],
     result_key: str,
+    *,
+    options: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     final = None
     tokens_so_far = 0
     run_started_at = time.monotonic()
+    prompt = _synthetic_prompt(THROUGHPUT_PROMPT_TOKENS)
+    call_options = dict(options or {"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S})
+    call_options["num_predict"] = THROUGHPUT_OUTPUT_TOKENS
     stream = chat.chat_stream(
         model=model,
-        messages=[{"role": "user", "content": "Count to ten."}],
-        options={"keep_alive": PLACEMENT_KEEP_ALIVE_WARM_S},
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Summarize the following diagnostic text in three compact paragraphs. "
+                    f"{prompt}"
+                ),
+            }
+        ],
+        options=call_options,
     )
     agen = stream.__aiter__()
     next_task: asyncio.Task | None = None
@@ -1101,9 +1201,11 @@ async def _probe_max_context_with_events(
     state: _PerfRunState,
     result: dict[str, Any],
     result_key: str,
+    *,
+    options: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     async for event in _await_with_heartbeat(
-        _probe_max_context(chat, model, contexts), state, result, result_key
+        _probe_max_context(chat, model, contexts, base_options=options), state, result, result_key
     ):
         yield event
 
@@ -1127,6 +1229,8 @@ async def perf_test(
     on completion so the user's expected state is preserved.
     """
     contexts = (body.contexts if body else None) or DEFAULT_CONTEXTS
+    gpu_count = len(request.app.state.gpu_state.last_snapshots or [])
+    profiles = _benchmark_profiles(gpu_count, body.profiles if body else None)
     settings = request.app.state.settings
     session_factory = request.app.state.session_factory
     model_locks = request.app.state.model_locks
@@ -1152,6 +1256,7 @@ async def perf_test(
             host_lock_acquired = False
             model_lock_acquired = False
             try:
+                current_profile: str | None = None
                 async for event in _emit_stage(run_state, "lock"):
                     yield event
                 async for event in _acquire_lock_with_events(host_perf_lock, run_state):
@@ -1162,112 +1267,159 @@ async def perf_test(
                 model_lock_acquired = True
                 async with _AdapterScope(lambda: chat_factory(settings.ollama_url)) as chat:
                     async with _AdapterScope(telemetry_factory) as telemetry:
-                        # Stage: unload (best effort).
-                        async for event in _emit_stage(run_state, "unload"):
-                            yield event
-                        async for event in _drop_model_with_events(chat, model, run_state):
-                            yield event
-                        async for event in _wait_unloaded_with_events(chat, model, run_state, timeout_s=15.0):
-                            yield event
-
-                        # Stage: cold_load.
-                        async for event in _emit_stage(run_state, "cold_load"):
-                            yield event
-                        samples: dict[str, Any] = {"before": None, "after": None}
-                        try:
-                            async for event in _telemetry_sample_with_events(
-                                telemetry, run_state, samples, "before"
-                            ):
-                                yield event
-                        except Exception:
-                            samples["before"] = None
-                        t0 = time.monotonic()
-                        cold_result: dict[str, Any] = {"first_byte": None}
-                        async for event in _cold_load_with_events(
-                            chat, model, run_state, cold_result, "first_byte"
-                        ):
-                            yield event
-                        first_byte_t = cold_result["first_byte"]
-                        cold_load_seconds = (first_byte_t - t0) if first_byte_t is not None else None
-                        try:
-                            async for event in _telemetry_sample_with_events(
-                                telemetry, run_state, samples, "after"
-                            ):
-                                yield event
-                        except Exception:
-                            samples["after"] = None
-                        gpu_layout = _gpu_layout_diff(samples["before"], samples["after"])
-
-                        # Stage: throughput.
-                        async for event in _emit_stage(run_state, "throughput"):
-                            yield event
-                        tps_runs: list[float] = []
-                        for _ in range(THROUGHPUT_RUNS):
-                            tps_result: dict[str, Any] = {"tps": None}
-                            async for event in _measure_throughput_with_events(
-                                chat, model, run_state, tps_result, "tps"
-                            ):
-                                yield event
-                            if tps_result["tps"] is not None:
-                                tps_runs.append(tps_result["tps"])
-                        mean_tps = statistics.mean(tps_runs) if tps_runs else None
-
-                        # Stage: context probe.
-                        async for event in _emit_stage(run_state, "context_probe"):
-                            yield event
-                        ctx_result: dict[str, Any] = {"max_ctx": None}
-                        async for event in _probe_max_context_with_events(
-                            chat, model, contexts, run_state, ctx_result, "max_ctx"
-                        ):
-                            yield event
-                        max_ctx = ctx_result["max_ctx"]
-
-                        # Stage: persist.
-                        async for event in _emit_stage(run_state, "persist"):
-                            yield event
-                        with session_factory() as s:
-                            row = _save_model_perf(
-                                s,
-                                model=model,
-                                cold_load_seconds=cold_load_seconds,
-                                throughput_tps=mean_tps,
-                                max_ctx_observed=max_ctx,
-                                gpu_layout=gpu_layout,
-                                placement_tested=prior_placement,
-                                gpu_count_at_test=len(request.app.state.gpu_state.last_snapshots or []),
-                                num_ctx_used=prior_num_ctx,
-                                keep_alive_used=(
-                                    str(_resolve_keep_alive(
-                                        prior_placement or "on_demand",
-                                        keep_alive_mode=prior_keep_alive_mode,
-                                        keep_alive_seconds=prior_keep_alive_seconds,
-                                    ))
-                                ),
-                            )
-                            write_admin_audit(
-                                s,
-                                actor_id=actor_id,
-                                action="model_perf_test",
-                                target_model=model,
-                                details={
-                                    "row_id": row.id,
-                                    "cold_load_seconds": cold_load_seconds,
-                                    "throughput_tps": mean_tps,
-                                    "max_ctx_observed": max_ctx,
-                                    "placement_tested": prior_placement,
+                        result_rows: list[dict[str, Any]] = []
+                        for profile in profiles:
+                            current_profile = profile
+                            profile_options = _profile_options(profile)
+                            yield _sse(
+                                "profile",
+                                {
+                                    "profile": profile,
+                                    "options": profile_options,
                                 },
-                                source_ip=source_ip,
                             )
-                            s.commit()
+
+                            # Stage: unload (best effort).
+                            async for event in _emit_stage(run_state, "unload"):
+                                yield event
+                            async for event in _drop_model_with_events(chat, model, run_state):
+                                yield event
+                            async for event in _wait_unloaded_with_events(chat, model, run_state, timeout_s=15.0):
+                                yield event
+
+                            # Stage: cold_load.
+                            async for event in _emit_stage(run_state, "cold_load"):
+                                yield event
+                            samples: dict[str, Any] = {"before": None, "after": None}
+                            try:
+                                async for event in _telemetry_sample_with_events(
+                                    telemetry, run_state, samples, "before"
+                                ):
+                                    yield event
+                            except Exception:
+                                samples["before"] = None
+                            t0 = time.monotonic()
+                            cold_result: dict[str, Any] = {"first_byte": None}
+                            async for event in _cold_load_with_events(
+                                chat,
+                                model,
+                                run_state,
+                                cold_result,
+                                "first_byte",
+                                options=profile_options,
+                            ):
+                                yield event
+                            first_byte_t = cold_result["first_byte"]
+                            cold_load_seconds = (first_byte_t - t0) if first_byte_t is not None else None
+                            try:
+                                async for event in _telemetry_sample_with_events(
+                                    telemetry, run_state, samples, "after"
+                                ):
+                                    yield event
+                            except Exception:
+                                samples["after"] = None
+                            gpu_layout = _gpu_layout_diff(samples["before"], samples["after"])
+
+                            # Stage: warm_load.
+                            async for event in _emit_stage(run_state, "warm_load"):
+                                yield event
+                            warm_t0 = time.monotonic()
+                            warm_result: dict[str, Any] = {"first_byte": None}
+                            async for event in _warm_load_with_events(
+                                chat,
+                                model,
+                                run_state,
+                                warm_result,
+                                "first_byte",
+                                options=profile_options,
+                            ):
+                                yield event
+                            warm_first_byte_t = warm_result["first_byte"]
+                            warm_load_seconds = (
+                                warm_first_byte_t - warm_t0 if warm_first_byte_t is not None else None
+                            )
+
+                            # Stage: throughput.
+                            async for event in _emit_stage(run_state, "throughput"):
+                                yield event
+                            tps_runs: list[float] = []
+                            for _ in range(THROUGHPUT_RUNS):
+                                tps_result: dict[str, Any] = {"tps": None}
+                                async for event in _measure_throughput_with_events(
+                                    chat,
+                                    model,
+                                    run_state,
+                                    tps_result,
+                                    "tps",
+                                    options=profile_options,
+                                ):
+                                    yield event
+                                if tps_result["tps"] is not None:
+                                    tps_runs.append(tps_result["tps"])
+                            mean_tps = statistics.mean(tps_runs) if tps_runs else None
+
+                            # Stage: context probe.
+                            async for event in _emit_stage(run_state, "context_probe"):
+                                yield event
+                            ctx_result: dict[str, Any] = {"max_ctx": None}
+                            async for event in _probe_max_context_with_events(
+                                chat,
+                                model,
+                                contexts,
+                                run_state,
+                                ctx_result,
+                                "max_ctx",
+                                options=profile_options,
+                            ):
+                                yield event
+                            max_ctx = ctx_result["max_ctx"]
+
+                            # Stage: persist.
+                            async for event in _emit_stage(run_state, "persist"):
+                                yield event
+                            with session_factory() as s:
+                                row = _save_model_perf(
+                                    s,
+                                    model=model,
+                                    cold_load_seconds=cold_load_seconds,
+                                    warm_load_seconds=warm_load_seconds,
+                                    throughput_tps=mean_tps,
+                                    max_ctx_observed=max_ctx,
+                                    gpu_layout=gpu_layout,
+                                    benchmark_profile=profile,
+                                    placement_tested=profile,
+                                    gpu_count_at_test=gpu_count,
+                                    num_ctx_used=prior_num_ctx,
+                                    keep_alive_used=str(profile_options.get("keep_alive")),
+                                )
+                                serialized = _last_perf_row(s, model) or {}
+                                serialized["profile_options"] = profile_options
+                                result_rows.append(serialized)
+                                write_admin_audit(
+                                    s,
+                                    actor_id=actor_id,
+                                    action="model_perf_test",
+                                    target_model=model,
+                                    details={
+                                        "row_id": row.id,
+                                        "cold_load_seconds": cold_load_seconds,
+                                        "warm_load_seconds": warm_load_seconds,
+                                        "throughput_tps": mean_tps,
+                                        "max_ctx_observed": max_ctx,
+                                        "benchmark_profile": profile,
+                                    },
+                                    source_ip=source_ip,
+                                )
+                                s.commit()
 
                         # Stage: restore before terminal result.
                         async for event in _emit_stage(run_state, "restore"):
                             yield event
                         async for event in _restore_prior_placement(chat, model, prior_placement, run_state):
                             yield event
-                        with session_factory() as s:
-                            result = _last_perf_row(s, model)
-                        yield _sse("result", result or {})
+                        result = dict(result_rows[-1]) if result_rows else {}
+                        result["profiles"] = result_rows
+                        yield _sse("result", result)
             finally:
                 if model_lock_acquired:
                     model_locks[model].release()
@@ -1301,19 +1453,83 @@ async def perf_test(
                 },
             )
         except OllamaModelNotFound:
+            with session_factory() as s:
+                _save_model_perf(
+                    s,
+                    model=model,
+                    cold_load_seconds=None,
+                    warm_load_seconds=None,
+                    throughput_tps=None,
+                    max_ctx_observed=None,
+                    gpu_layout={},
+                    benchmark_profile=current_profile,
+                    placement_tested=current_profile,
+                    gpu_count_at_test=gpu_count,
+                    num_ctx_used=prior_num_ctx,
+                    notes="profile failed: model_not_found",
+                )
+                s.commit()
             yield _sse("error", {"stage": run_state.stage, "message": "model_not_found"})
         except OllamaUnreachableError as exc:
+            with session_factory() as s:
+                _save_model_perf(
+                    s,
+                    model=model,
+                    cold_load_seconds=None,
+                    warm_load_seconds=None,
+                    throughput_tps=None,
+                    max_ctx_observed=None,
+                    gpu_layout={},
+                    benchmark_profile=current_profile,
+                    placement_tested=current_profile,
+                    gpu_count_at_test=gpu_count,
+                    num_ctx_used=prior_num_ctx,
+                    notes=f"profile failed: ollama_unreachable: {exc}",
+                )
+                s.commit()
             yield _sse(
                 "error",
                 {"stage": run_state.stage, "message": f"ollama_unreachable: {exc}"},
             )
         except OllamaResponseError as exc:
+            with session_factory() as s:
+                _save_model_perf(
+                    s,
+                    model=model,
+                    cold_load_seconds=None,
+                    warm_load_seconds=None,
+                    throughput_tps=None,
+                    max_ctx_observed=None,
+                    gpu_layout={},
+                    benchmark_profile=current_profile,
+                    placement_tested=current_profile,
+                    gpu_count_at_test=gpu_count,
+                    num_ctx_used=prior_num_ctx,
+                    notes=f"profile failed: model_not_supported: {exc}",
+                )
+                s.commit()
             yield _sse(
                 "error",
                 {"stage": run_state.stage, "message": f"model_not_supported: {exc}"},
             )
         except Exception as exc:
             log.exception("Perf test failed for %s", model)
+            with session_factory() as s:
+                _save_model_perf(
+                    s,
+                    model=model,
+                    cold_load_seconds=None,
+                    warm_load_seconds=None,
+                    throughput_tps=None,
+                    max_ctx_observed=None,
+                    gpu_layout={},
+                    benchmark_profile=current_profile,
+                    placement_tested=current_profile,
+                    gpu_count_at_test=gpu_count,
+                    num_ctx_used=prior_num_ctx,
+                    notes=f"profile failed: {exc}",
+                )
+                s.commit()
             yield _sse("error", {"stage": run_state.stage, "message": str(exc)})
         finally:
             active_runs.pop(model, None)

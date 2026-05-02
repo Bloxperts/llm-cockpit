@@ -22,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import statistics
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -40,12 +41,17 @@ from cockpit.ports.llm_chat import (
     OllamaUnreachableError,
 )
 from cockpit.ports.telemetry import GpuSnapshot, Telemetry, TelemetryUnavailableError
+from cockpit.services.recommendations import score_recommendations
 
 log = logging.getLogger(__name__)
 
 GPU_SAMPLE_INTERVAL_S = 5.0
 MODEL_STATE_SAMPLE_INTERVAL_S = 30.0
 OLLAMA_UNREACHABLE_THRESHOLD_S = 30.0
+BENCHMARK_HISTORY_LIMIT = 5
+BENCHMARK_STALE_DAYS = 14.0
+BENCHMARK_OLD_DAYS = 30.0
+TREND_MIN_BASELINE_RUNS = 2
 
 
 # --- Per-app state containers --------------------------------------------
@@ -318,26 +324,367 @@ def _serialize_loaded(loaded: list[LoadedModel]) -> dict[str, dict[str, Any]]:
     }
 
 
-def _last_perf_for(session: Session, model: str) -> dict[str, Any] | None:
-    row = (
+def _perf_profile(row: ModelPerf) -> str:
+    return row.benchmark_profile or row.placement_tested or "on_demand"
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _benchmark_age_days(row: ModelPerf, *, now: datetime) -> float | None:
+    measured_at = _as_utc(row.measured_at)
+    if measured_at is None:
+        return None
+    return max(0.0, (now - measured_at).total_seconds() / 86400)
+
+
+def _pct_change(current: float | int | None, baseline: float | int | None) -> float | None:
+    if current is None or baseline is None or baseline == 0:
+        return None
+    return (float(current) - float(baseline)) / float(baseline)
+
+
+def _profile_status(row: ModelPerf) -> str:
+    notes = (row.notes or "").lower()
+    if "skipped" in notes:
+        return "skipped"
+    if "failed" in notes or "error" in notes or "not_supported" in notes:
+        return "failed"
+    facts = [
+        row.cold_load_seconds,
+        row.warm_load_seconds,
+        row.throughput_tps,
+        row.max_ctx_observed,
+    ]
+    if all(value is not None for value in facts):
+        return "success"
+    if any(value is not None for value in facts):
+        return "partial"
+    return "incomplete"
+
+
+def _data_quality(row: ModelPerf) -> str:
+    status = _profile_status(row)
+    if status in {"failed", "skipped", "incomplete"}:
+        return "insufficient"
+    if status == "partial":
+        return "partial"
+    if not row.gpu_layout_json and _perf_profile(row) != "on_demand":
+        return "uncertain"
+    return "complete"
+
+
+def _numeric_values(rows: list[ModelPerf], field: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        value = getattr(row, field)
+        if value is not None:
+            values.append(float(value))
+    return values
+
+
+def _trend_for_metric(
+    latest: ModelPerf,
+    baseline_rows: list[ModelPerf],
+    field: str,
+    *,
+    higher_is_better: bool,
+    threshold: float,
+) -> dict[str, Any]:
+    latest_value = getattr(latest, field)
+    baseline_values = _numeric_values(baseline_rows, field)
+    if latest_value is None or len(baseline_values) < TREND_MIN_BASELINE_RUNS:
+        return {
+            "direction": "unknown",
+            "pct_change": None,
+            "quality": "missing",
+            "latest": latest_value,
+            "baseline": None,
+        }
+    baseline = statistics.median(baseline_values)
+    change = _pct_change(latest_value, baseline)
+    if change is None:
+        direction = "unknown"
+    elif abs(change) < threshold:
+        direction = "flat"
+    elif change > 0:
+        direction = "up"
+    else:
+        direction = "down"
+
+    quality = "ok"
+    if len(baseline_values) >= 3:
+        median = baseline or 0
+        spread = (max(baseline_values) - min(baseline_values)) / median if median else 0
+        if spread >= 0.60:
+            quality = "volatile"
+
+    if direction in {"up", "down"}:
+        bad = (direction == "down" and higher_is_better) or (direction == "up" and not higher_is_better)
+        if bad and quality == "ok":
+            quality = "ok"
+    return {
+        "direction": direction,
+        "pct_change": change,
+        "quality": quality,
+        "latest": float(latest_value),
+        "baseline": baseline,
+    }
+
+
+def _trend_summary(latest: ModelPerf, history_rows: list[ModelPerf]) -> dict[str, Any]:
+    baseline_rows = history_rows[1:BENCHMARK_HISTORY_LIMIT]
+    trends = {
+        "throughput_tps": _trend_for_metric(
+            latest,
+            baseline_rows,
+            "throughput_tps",
+            higher_is_better=True,
+            threshold=0.20,
+        ),
+        "warm_load_seconds": _trend_for_metric(
+            latest,
+            baseline_rows,
+            "warm_load_seconds",
+            higher_is_better=False,
+            threshold=0.30,
+        ),
+        "cold_load_seconds": _trend_for_metric(
+            latest,
+            baseline_rows,
+            "cold_load_seconds",
+            higher_is_better=False,
+            threshold=0.30,
+        ),
+        "max_ctx_observed": _trend_for_metric(
+            latest,
+            baseline_rows,
+            "max_ctx_observed",
+            higher_is_better=True,
+            threshold=0.20,
+        ),
+    }
+    signals: list[str] = []
+    status = "stable"
+    if all(trend["direction"] == "unknown" for trend in trends.values()):
+        return {
+            "trend_status": "unknown",
+            "trend_signals": ["not enough history for trend detection"],
+            "trends": trends,
+        }
+    labels = {
+        "throughput_tps": "tokens/s",
+        "warm_load_seconds": "warm load",
+        "cold_load_seconds": "cold load",
+        "max_ctx_observed": "max context",
+    }
+    higher_is_better = {
+        "throughput_tps": True,
+        "warm_load_seconds": False,
+        "cold_load_seconds": False,
+        "max_ctx_observed": True,
+    }
+    for field, trend in trends.items():
+        direction = trend["direction"]
+        if trend["quality"] == "volatile":
+            status = "unknown" if status == "stable" else status
+            signals.append(f"{labels[field]} history is volatile")
+            continue
+        if direction == "unknown":
+            continue
+        if direction == "flat":
+            continue
+        bad = (direction == "down" and higher_is_better[field]) or (
+            direction == "up" and not higher_is_better[field]
+        )
+        pct = trend["pct_change"]
+        pct_label = f"{abs(pct) * 100:.0f}%" if isinstance(pct, int | float) else "changed"
+        if bad:
+            status = "warning"
+            signals.append(f"{labels[field]} trend worsened by {pct_label}")
+        elif status == "stable":
+            status = "info"
+            signals.append(f"{labels[field]} trend improved by {pct_label}")
+    if not baseline_rows:
+        return {
+            "trend_status": "unknown",
+            "trend_signals": ["not enough history for trend detection"],
+            "trends": trends,
+        }
+    if not signals:
+        signals.append("recent trend is within conservative thresholds")
+    return {"trend_status": status, "trend_signals": signals, "trends": trends}
+
+
+def _drift_summary(latest: ModelPerf, previous: ModelPerf | None) -> dict[str, Any]:
+    if previous is None:
+        return {
+            "drift_status": "unknown",
+            "drift_signals": ["not enough history for drift detection"],
+        }
+
+    signals: list[str] = []
+    status = "stable"
+
+    tps_change = _pct_change(latest.throughput_tps, previous.throughput_tps)
+    if tps_change is not None and abs(tps_change) >= 0.25:
+        direction = "slower" if tps_change < 0 else "faster"
+        signals.append(f"tokens/s {abs(tps_change) * 100:.0f}% {direction} than previous run")
+        status = "warning" if tps_change < 0 else "info"
+
+    for metric_field, label in (
+        ("cold_load_seconds", "cold load"),
+        ("warm_load_seconds", "warm load"),
+    ):
+        load_change = _pct_change(getattr(latest, metric_field), getattr(previous, metric_field))
+        if load_change is not None and abs(load_change) >= 0.40:
+            direction = "slower" if load_change > 0 else "faster"
+            signals.append(f"{label} {abs(load_change) * 100:.0f}% {direction} than previous run")
+            if load_change > 0:
+                status = "warning"
+            elif status == "stable":
+                status = "info"
+
+    ctx_change = _pct_change(latest.max_ctx_observed, previous.max_ctx_observed)
+    if ctx_change is not None and latest.max_ctx_observed is not None and ctx_change < 0:
+        signals.append(
+            f"max context fell from {int(previous.max_ctx_observed or 0):,} to {latest.max_ctx_observed:,}"
+        )
+        status = "warning"
+
+    if not signals:
+        signals.append("latest run is within conservative drift thresholds")
+    return {"drift_status": status, "drift_signals": signals}
+
+
+def _history_entry(row: ModelPerf, *, now: datetime) -> dict[str, Any]:
+    age_days = _benchmark_age_days(row, now=now)
+    return {
+        "measured_at": row.measured_at.isoformat() if row.measured_at else None,
+        "cold_load_seconds": row.cold_load_seconds,
+        "warm_load_seconds": row.warm_load_seconds,
+        "throughput_tps": row.throughput_tps,
+        "max_ctx_observed": row.max_ctx_observed,
+        "notes": row.notes,
+        "age_days": age_days,
+        "status": _profile_status(row),
+    }
+
+
+def _serialize_perf(
+    row: ModelPerf,
+    *,
+    history_rows: list[ModelPerf] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(UTC)
+    history_rows = history_rows or [row]
+    previous = history_rows[1] if len(history_rows) > 1 else None
+    age_days = _benchmark_age_days(row, now=now)
+    drift = _drift_summary(row, previous)
+    trend = _trend_summary(row, history_rows)
+    profile_status = _profile_status(row)
+    data_quality = _data_quality(row)
+    staleness = (
+        "old"
+        if age_days is not None and age_days >= BENCHMARK_OLD_DAYS
+        else "stale"
+        if age_days is not None and age_days >= BENCHMARK_STALE_DAYS
+        else "fresh"
+        if age_days is not None
+        else "unknown"
+    )
+    retest_reasons: list[str] = []
+    if profile_status in {"failed", "skipped", "partial", "incomplete"}:
+        retest_reasons.append(f"profile {profile_status}")
+    if staleness in {"stale", "old"}:
+        retest_reasons.append(f"benchmark {staleness}")
+    if drift["drift_status"] == "warning":
+        retest_reasons.append("drift warning")
+    if trend["trend_status"] == "warning":
+        retest_reasons.append("trend warning")
+    return {
+        "cold_load_seconds": row.cold_load_seconds,
+        "warm_load_seconds": row.warm_load_seconds,
+        "throughput_tps": row.throughput_tps,
+        "max_ctx_observed": row.max_ctx_observed,
+        "benchmark_profile": _perf_profile(row),
+        "placement_tested": row.placement_tested,
+        "gpu_layout_diff": json.loads(row.gpu_layout_json) if row.gpu_layout_json else {},
+        "notes": row.notes,
+        "recommendations": [],
+        "measured_at": row.measured_at.isoformat() if row.measured_at else None,
+        "age_days": age_days,
+        "is_stale": bool(age_days is not None and age_days >= BENCHMARK_STALE_DAYS),
+        "staleness": staleness,
+        "drift_status": drift["drift_status"],
+        "drift_signals": drift["drift_signals"],
+        "trend_status": trend["trend_status"],
+        "trend_signals": trend["trend_signals"],
+        "trends": trend["trends"],
+        "profile_status": profile_status,
+        "data_quality": data_quality,
+        "retest_recommended": bool(retest_reasons),
+        "retest_reason": ", ".join(retest_reasons) if retest_reasons else None,
+        "history": [_history_entry(item, now=now) for item in history_rows[:BENCHMARK_HISTORY_LIMIT]],
+    }
+
+
+def _latest_perf_profiles_for(
+    session: Session,
+    model: str,
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    now = now or datetime.now(UTC)
+    rows = (
         session.execute(
             select(ModelPerf)
             .where(ModelPerf.model == model)
-            .order_by(ModelPerf.measured_at.desc())
-            .limit(1)
+            .order_by(ModelPerf.measured_at.desc(), ModelPerf.id.desc())
         )
         .scalars()
-        .first()
+        .all()
     )
-    if row is None:
+    seen: set[str] = set()
+    history_by_profile: dict[str, list[ModelPerf]] = {}
+    for row in rows:
+        history_by_profile.setdefault(_perf_profile(row), []).append(row)
+    latest: list[dict[str, Any]] = []
+    for row in rows:
+        profile = _perf_profile(row)
+        if profile in seen:
+            continue
+        seen.add(profile)
+        latest.append(_serialize_perf(row, history_rows=history_by_profile[profile], now=now))
+    return latest
+
+
+def _last_perf_for(
+    session: Session,
+    model: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    now = now or datetime.now(UTC)
+    rows = (
+        session.execute(
+            select(ModelPerf)
+            .where(ModelPerf.model == model)
+            .order_by(ModelPerf.measured_at.desc(), ModelPerf.id.desc())
+            .limit(BENCHMARK_HISTORY_LIMIT)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
         return None
-    return {
-        "cold_load_seconds": row.cold_load_seconds,
-        "throughput_tps": row.throughput_tps,
-        "max_ctx_observed": row.max_ctx_observed,
-        "placement_tested": row.placement_tested,
-        "measured_at": row.measured_at.isoformat() if row.measured_at else None,
-    }
+    return _serialize_perf(rows[0], history_rows=rows, now=now)
 
 
 def _keep_alive_label(config: ModelConfig | None) -> str:
@@ -436,10 +783,28 @@ def _build_model_card(
     tag_source: str | None,
     loaded_index: dict[str, dict[str, Any]],
     perf: dict[str, Any] | None,
+    benchmark_profiles: list[dict[str, Any]],
     metadata: ModelMetadata | None,
     gpus: list[GpuSnapshot],
 ) -> dict[str, Any]:
     placement = _dashboard_placement(config.placement if config is not None else None)
+    metadata_payload = _metadata_payload(metadata, info)
+    for row in benchmark_profiles:
+        row["recommendations"] = score_recommendations(
+            model_name=info.name,
+            tag=tag,
+            metadata=metadata_payload,
+            metrics=row,
+            size_bytes=info.size_bytes,
+        )
+    if perf is not None:
+        perf["recommendations"] = score_recommendations(
+            model_name=info.name,
+            tag=tag,
+            metadata=metadata_payload,
+            metrics=perf,
+            size_bytes=info.size_bytes,
+        )
     config_payload = {
         "placement": placement,
         "keep_alive_mode": config.keep_alive_mode if config is not None else "default",
@@ -461,7 +826,7 @@ def _build_model_card(
         "tag": tag,
         "tag_source": tag_source,
         "size_bytes": info.size_bytes,
-        "metadata": _metadata_payload(metadata, info),
+        "metadata": metadata_payload,
         "config": config_payload,
         "actual": actual,
         "context": _context_payload(
@@ -472,6 +837,7 @@ def _build_model_card(
             gpus=gpus,
         ),
         "metrics": perf,
+        "benchmark_profiles": benchmark_profiles,
     }
 
 
@@ -490,6 +856,7 @@ def assemble_dashboard_snapshot(
     `messages` table — see TODO comment in routers/dashboard.py.
     """
     now = now if now is not None else time.monotonic()
+    wall_now = datetime.now(UTC)
     snapshots = gpu_state.last_snapshots or []
     gpus_payload = [_serialize_gpu(s) for s in snapshots]
     columns = _columns_for(len(snapshots))
@@ -529,7 +896,8 @@ def assemble_dashboard_snapshot(
             tag=tags.get(info.name, (None, None))[0],
             tag_source=tags.get(info.name, (None, None))[1],
             loaded_index=loaded_index,
-            perf=_last_perf_for(session, info.name),
+            perf=_last_perf_for(session, info.name, now=wall_now),
+            benchmark_profiles=_latest_perf_profiles_for(session, info.name, now=wall_now),
             metadata=metadata.get(info.name),
             gpus=snapshots,
         )
@@ -542,5 +910,5 @@ def assemble_dashboard_snapshot(
         "models": models_payload,
         "last_calls": list(last_calls) if last_calls is not None else [],
         "status": _model_state_status(gpu_state, model_state, now=now),
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
     }

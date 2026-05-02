@@ -112,12 +112,49 @@ class ModelContextPayload(BaseModel):
     headroom_mb: int | None = None
 
 
-class ModelMetricsPayload(BaseModel):
+class BenchmarkHistoryPayload(BaseModel):
+    measured_at: str | None
     cold_load_seconds: float | None
+    warm_load_seconds: float | None = None
     throughput_tps: float | None
     max_ctx_observed: int | None
+    notes: str | None = None
+    age_days: float | None = None
+    status: str = "unknown"
+
+
+class RecommendationPayload(BaseModel):
+    use_case: str
+    score: int
+    confidence: str
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ModelMetricsPayload(BaseModel):
+    cold_load_seconds: float | None
+    warm_load_seconds: float | None = None
+    throughput_tps: float | None
+    max_ctx_observed: int | None
+    benchmark_profile: str | None = None
     placement_tested: str | None = None
+    gpu_layout_diff: dict[str, int] = Field(default_factory=dict)
+    notes: str | None = None
+    recommendations: list[RecommendationPayload] = Field(default_factory=list)
     measured_at: str | None
+    age_days: float | None = None
+    is_stale: bool = False
+    staleness: str = "unknown"
+    drift_status: str = "unknown"
+    drift_signals: list[str] = Field(default_factory=list)
+    trend_status: str = "unknown"
+    trend_signals: list[str] = Field(default_factory=list)
+    trends: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    profile_status: str = "unknown"
+    data_quality: str = "unknown"
+    retest_recommended: bool = False
+    retest_reason: str | None = None
+    history: list[BenchmarkHistoryPayload] = Field(default_factory=list)
 
 
 class ModelCardPayload(BaseModel):
@@ -130,6 +167,7 @@ class ModelCardPayload(BaseModel):
     actual: ModelActualPayload
     context: ModelContextPayload = Field(default_factory=ModelContextPayload)
     metrics: ModelMetricsPayload | None
+    benchmark_profiles: list[ModelMetricsPayload] = Field(default_factory=list)
 
 
 class DashboardSnapshot(BaseModel):
@@ -187,6 +225,7 @@ class PullRequest(BaseModel):
 
 class PerfTestRequest(BaseModel):
     contexts: list[int] | None = None
+    profiles: list[str] | None = None
 
 
 # --- UC-04 / UC-05: chat + code -------------------------------------------

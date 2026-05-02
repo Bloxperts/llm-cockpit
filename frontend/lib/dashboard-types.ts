@@ -47,10 +47,55 @@ export interface ModelContextPayload {
 
 export interface ModelMetricsPayload {
   cold_load_seconds: number | null;
+  warm_load_seconds: number | null;
   throughput_tps: number | null;
   max_ctx_observed: number | null;
+  benchmark_profile: string | null;
   placement_tested: string | null;
+  gpu_layout_diff: Record<string, number>;
+  notes: string | null;
+  recommendations: RecommendationPayload[];
   measured_at: string | null;
+  age_days: number | null;
+  is_stale: boolean;
+  staleness: string;
+  drift_status: string;
+  drift_signals: string[];
+  trend_status: string;
+  trend_signals: string[];
+  trends: Record<string, BenchmarkTrendPayload>;
+  profile_status: string;
+  data_quality: string;
+  retest_recommended: boolean;
+  retest_reason: string | null;
+  history: BenchmarkHistoryPayload[];
+}
+
+export interface BenchmarkHistoryPayload {
+  measured_at: string | null;
+  cold_load_seconds: number | null;
+  warm_load_seconds: number | null;
+  throughput_tps: number | null;
+  max_ctx_observed: number | null;
+  notes: string | null;
+  age_days: number | null;
+  status: string;
+}
+
+export interface BenchmarkTrendPayload {
+  direction: "up" | "down" | "flat" | "unknown";
+  pct_change: number | null;
+  quality: "ok" | "missing" | "volatile";
+  latest: number | null;
+  baseline: number | null;
+}
+
+export interface RecommendationPayload {
+  use_case: string;
+  score: number;
+  confidence: string;
+  reasons: string[];
+  warnings: string[];
 }
 
 export interface ModelCardPayload {
@@ -63,6 +108,7 @@ export interface ModelCardPayload {
   actual: ModelActualPayload;
   context: ModelContextPayload;
   metrics: ModelMetricsPayload | null;
+  benchmark_profiles: ModelMetricsPayload[];
 }
 
 export interface DashboardSnapshot {
