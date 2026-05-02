@@ -18,6 +18,7 @@ import { useAuthStore } from "@/lib/auth-store";
 import {
   COLUMN_LABELS,
   DashboardSnapshot,
+  GpuPayload,
   ModelCardPayload,
   fmtBytes,
   isWarmColumn,
@@ -565,6 +566,7 @@ export default function DashboardPage() {
                     key={col}
                     col={col}
                     models={buckets.get(col) ?? []}
+                    gpus={snapshot.gpus}
                     columns={snapshot.columns}
                     isAdmin={!!isAdmin}
                     busyModel={busyModel}
@@ -1114,21 +1116,6 @@ function apiErrorSummary(prefix: string, error: ApiError) {
   return `${prefix}: HTTP ${error.status}`;
 }
 
-function formatExpiresAt(value: string | null | undefined) {
-  if (!value) return "permanent";
-  const expires = new Date(value);
-  if (Number.isNaN(expires.getTime())) return "unknown";
-  const now = Date.now();
-  if (expires.getFullYear() >= 2100) return "permanent";
-  const remainingMs = expires.getTime() - now;
-  if (remainingMs <= 0) return "now";
-  const remainingMinutes = Math.round(remainingMs / 60000);
-  if (remainingMinutes < 90) return `${remainingMinutes} min`;
-  const remainingHours = remainingMs / 3600000;
-  if (remainingHours < 48) return `${remainingHours.toFixed(1)} h`;
-  return expires.toLocaleString();
-}
-
 function ageLabel(days: number | null | undefined) {
   if (days == null) return "age unknown";
   if (days < 1) return "today";
@@ -1339,6 +1326,7 @@ function RecommendationFacts({ recommendation }: { recommendation: ReturnType<ty
 function ColumnView(props: {
   col: string;
   models: ModelCardPayload[];
+  gpus: GpuPayload[];
   columns: string[];
   isAdmin: boolean;
   busyModel: string | null;
@@ -1350,7 +1338,7 @@ function ColumnView(props: {
   onDelete: (model: string) => void;
   onPerfTest: (model: string) => void;
 }) {
-  const { col, models, columns, isAdmin, busyModel } = props;
+  const { col, models, gpus, isAdmin, busyModel } = props;
   const { isOver, setNodeRef } = useDroppable({ id: col, disabled: !isAdmin });
   const label = COLUMN_LABELS[col] ?? col.toUpperCase();
   const warm = isWarmColumn(col);
@@ -1383,12 +1371,9 @@ function ColumnView(props: {
             <ModelCardView
               key={m.name}
               m={m}
-              columns={columns}
+              gpus={gpus}
               isAdmin={isAdmin}
               busy={busyModel === m.name}
-              onPlacementChange={(placement, extras) => props.onPlacementChange(m.name, placement, extras)}
-              onDelete={() => props.onDelete(m.name)}
-              onPerfTest={() => props.onPerfTest(m.name)}
             />
           ))}
         </ul>
@@ -1399,31 +1384,23 @@ function ColumnView(props: {
 
 function ModelCardView({
   m,
-  columns,
+  gpus,
   isAdmin,
   busy,
-  onPlacementChange,
-  onDelete,
-  onPerfTest,
 }: {
   m: ModelCardPayload;
-  columns: string[];
+  gpus: GpuPayload[];
   isAdmin: boolean;
   busy: boolean;
-  onPlacementChange: (
-    placement: string,
-    extras?: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null },
-  ) => void;
-  onDelete: () => void;
-  onPerfTest: () => void;
 }) {
   const placement = m.config?.placement ?? "on_demand";
-  const safeCtx = m.context?.max_estimated_ctx ?? null;
-  const configuredCtx = m.config?.num_ctx_default ?? null;
-  const measuredCtx = m.context?.max_measured_ctx ?? m.metrics?.max_ctx_observed ?? null;
-  const ctxWarning = Boolean(safeCtx && configuredCtx && configuredCtx > safeCtx);
   const metadataBits = [m.metadata?.parameter_size, m.metadata?.quantization_level].filter(Boolean);
   const requestedWarm = isWarmColumn(placement);
+  const singleMetrics = preferredSingleProfile(m);
+  const tensorMetrics = preferredTensorProfile(m);
+  const singleCtx = singleMetrics?.max_ctx_observed ?? m.context?.max_measured_ctx ?? m.context?.max_estimated_ctx ?? null;
+  const tensorCtx = tensorMetrics?.max_ctx_observed ?? null;
+  const heat = heatStatusFor(m, gpus);
   const actualLabel =
     m.actual.gpu_layout && Object.keys(m.actual.gpu_layout).length
       ? Object.entries(m.actual.gpu_layout)
@@ -1438,13 +1415,6 @@ function ModelCardView({
           : requestedWarm
             ? "not in VRAM"
             : "idle";
-  const residencyDetail = m.actual.loaded
-    ? requestedWarm
-      ? `Loaded until ${formatExpiresAt(m.actual.expires_at)}`
-      : `Still in VRAM despite ${COLUMN_LABELS[placement] ?? placement}; Ollama has not unloaded it yet.`
-    : requestedWarm
-      ? "Requested warm, but Ollama is not keeping it loaded."
-      : "Loads on first request.";
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: m.name,
     disabled: !isAdmin || busy,
@@ -1486,153 +1456,110 @@ function ModelCardView({
             <span>{fmtBytes(m.size_bytes)}</span>
             {metadataBits.length ? <span>{metadataBits.join(" · ")}</span> : null}
           </div>
-          <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-            {m.metadata?.release_date_label ?? "Release: unknown"}
-          </div>
         </div>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-1 text-[11px]">
-        <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
-          <span className="text-neutral-500 dark:text-neutral-400">req</span>{" "}
-          {COLUMN_LABELS[placement] ?? placement.toUpperCase()}
-        </div>
-        <div className={`rounded px-2 py-1 ${m.actual.loaded ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-neutral-100 dark:bg-neutral-900"}`}>
-          {actualLabel}
-        </div>
-        <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
-          keep {m.config?.keep_alive_label ?? "Default"}
-        </div>
-        <div className={`rounded px-2 py-1 ${ctxWarning ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300" : "bg-neutral-100 dark:bg-neutral-900"}`}>
-          ctx {configuredCtx?.toLocaleString() ?? "—"} / {safeCtx?.toLocaleString() ?? "?"} · {m.context.estimate_confidence}
-        </div>
+      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-neutral-600 dark:text-neutral-400">
+        <span>{actualLabel}</span>
+        <span className={`rounded-full px-2 py-0.5 font-semibold ${heat.cls}`} title={heat.title}>
+          {heat.label}
+        </span>
       </div>
       {m.actual.mismatch ? (
         <div className="text-xs text-rose-600 mt-0.5">
           Requested {placement} · Ollama placed on GPU {m.actual.main_gpu_actual}
         </div>
       ) : null}
-      <div className={`mt-1 text-xs ${m.actual.loaded ? "text-emerald-700 dark:text-emerald-300" : requestedWarm ? "text-amber-700 dark:text-amber-300" : "text-neutral-500 dark:text-neutral-400"}`}>
-        {residencyDetail}
+      <div className="mt-2 grid grid-cols-2 gap-1 text-[11px]">
+        <CardMetricTile label="calls 30d" value={m.calls_30d.toLocaleString()} />
+        <CardMetricTile label="cold" value={singleMetrics?.cold_load_seconds != null ? `${singleMetrics.cold_load_seconds.toFixed(1)}s` : "—"} />
+        <CardMetricTile label="tks/s single" value={singleMetrics?.throughput_tps != null ? singleMetrics.throughput_tps.toFixed(1) : "—"} />
+        <CardMetricTile label="tks/s tensor" value={tensorMetrics?.throughput_tps != null ? tensorMetrics.throughput_tps.toFixed(1) : "—"} />
+        <CardMetricTile label="ctx single" value={singleCtx?.toLocaleString() ?? "—"} />
+        <CardMetricTile label="ctx tensor" value={tensorCtx?.toLocaleString() ?? "—"} />
       </div>
-      {ctxWarning ? (
-        <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-          Configured ctx exceeds safe estimate.
-        </div>
-      ) : null}
-      {m.metrics ? (
-        <div className="mt-2 grid grid-cols-3 gap-1 text-xs font-mono">
-          <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
-            {m.metrics.cold_load_seconds?.toFixed(1) ?? "—"}s
-          </div>
-          <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
-            {m.metrics.throughput_tps?.toFixed(1) ?? "—"}tps
-          </div>
-          <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
-            {measuredCtx ?? "?"} ctx
-          </div>
-        </div>
-      ) : (
+      {!m.metrics && !m.benchmark_profiles.length ? (
         <div className="text-xs text-neutral-500 italic mt-1">
-          no perf data — run Test performance
-        </div>
-      )}
-      {isAdmin ? (
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          <select
-            className="cockpit-input min-h-7 text-xs"
-            value={placement}
-            disabled={busy}
-            onChange={(e) => onPlacementChange(e.target.value)}
-          >
-            {columns.map((c) => (
-              <option key={c} value={c}>
-                {COLUMN_LABELS[c] ?? c}
-              </option>
-            ))}
-          </select>
-          <select
-            className="cockpit-input min-h-7 text-xs"
-            value={
-              m.config.keep_alive_mode === "permanent"
-                ? "permanent"
-                : m.config.keep_alive_seconds === 900
-                  ? "15m"
-                  : m.config.keep_alive_seconds === 3600
-                    ? "1h"
-                    : m.config.keep_alive_seconds === 14400
-                      ? "4h"
-                      : m.config.keep_alive_seconds === 86400
-                        ? "24h"
-                        : m.config.keep_alive_mode === "finite"
-                          ? "custom"
-                          : "default"
-            }
-            disabled={busy}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === "permanent") onPlacementChange(placement, { keep_alive_mode: "permanent" });
-              if (v === "15m") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 900 });
-              if (v === "1h") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 3600 });
-              if (v === "4h") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 14400 });
-              if (v === "24h") onPlacementChange(placement, { keep_alive_mode: "finite", keep_alive_seconds: 86400 });
-            }}
-            title="Keep alive"
-          >
-            <option value="default">Default</option>
-            <option value="15m">15m</option>
-            <option value="1h">1h</option>
-            <option value="4h">4h</option>
-            <option value="24h">24h</option>
-            <option value="permanent">Permanent</option>
-            <option value="custom">Custom</option>
-          </select>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onPerfTest}
-            className="cockpit-button min-h-7 px-2 py-1 text-xs"
-          >
-            Perf
-          </button>
-          <button
-            type="button"
-            disabled={busy || !safeCtx}
-            onClick={() => onPlacementChange(placement, { num_ctx_default: safeCtx })}
-            className="cockpit-button min-h-7 px-2 py-1 text-xs"
-            title="Use safe estimate"
-          >
-            Safe ctx
-          </button>
-          <button
-            type="button"
-            disabled={busy || !measuredCtx}
-            onClick={() => onPlacementChange(placement, { num_ctx_default: measuredCtx })}
-            className="cockpit-button min-h-7 px-2 py-1 text-xs"
-            title="Use measured max"
-          >
-            Measured
-          </button>
-          <button
-            type="button"
-            disabled={busy || configuredCtx == null}
-            onClick={() => onPlacementChange(placement, { num_ctx_default: null })}
-            className="cockpit-button min-h-7 px-2 py-1 text-xs"
-            title="Clear context override"
-          >
-            Clear ctx
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onDelete}
-            className="cockpit-button min-h-7 border-rose-300 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950"
-          >
-            Delete
-          </button>
+          no perf data
         </div>
       ) : null}
     </li>
   );
+}
+
+function CardMetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded bg-neutral-100 px-2 py-1 dark:bg-neutral-900">
+      <div className="text-[10px] uppercase text-neutral-500 dark:text-neutral-400">{label}</div>
+      <div className="font-mono text-xs text-neutral-900 dark:text-neutral-100">{value}</div>
+    </div>
+  );
+}
+
+function preferredSingleProfile(m: ModelCardPayload) {
+  return (
+    m.benchmark_profiles.find((p) => p.benchmark_profile?.startsWith("gpu")) ??
+    m.benchmark_profiles.find((p) => p.benchmark_profile === "on_demand") ??
+    m.metrics
+  );
+}
+
+function preferredTensorProfile(m: ModelCardPayload) {
+  return m.benchmark_profiles.find((p) => p.benchmark_profile === "multi_gpu") ?? null;
+}
+
+function heatStatusFor(m: ModelCardPayload, gpus: GpuPayload[]) {
+  const temp = modelHeatTemp(m, gpus);
+  if (temp == null) {
+    return {
+      label: "heat",
+      title: "No GPU temperature telemetry available",
+      cls: "bg-neutral-100 text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400",
+    };
+  }
+  if (temp >= 89) {
+    return {
+      label: "heat",
+      title: `Huge thermal throttling risk (${Math.round(temp)} C)`,
+      cls: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+    };
+  }
+  if (temp >= 82) {
+    return {
+      label: "heat",
+      title: `Some thermal throttling risk (${Math.round(temp)} C)`,
+      cls: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+    };
+  }
+  return {
+    label: "heat",
+    title: `No thermal throttling signal (${Math.round(temp)} C)`,
+    cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  };
+}
+
+function modelHeatTemp(m: ModelCardPayload, gpus: GpuPayload[]): number | null {
+  const byIndex = new Map(gpus.map((g) => [g.index, g.temp_c]));
+  const temps: number[] = [];
+  if (m.actual.gpu_layout) {
+    for (const key of Object.keys(m.actual.gpu_layout)) {
+      const match = key.match(/\d+/);
+      if (!match) continue;
+      const temp = byIndex.get(Number(match[0]));
+      if (temp != null) temps.push(temp);
+    }
+  }
+  if (!temps.length && m.actual.main_gpu_actual != null) {
+    const temp = byIndex.get(m.actual.main_gpu_actual);
+    if (temp != null) temps.push(temp);
+  }
+  if (!temps.length && /^gpu\d+$/.test(m.config.placement)) {
+    const temp = byIndex.get(Number(m.config.placement.slice(3)));
+    if (temp != null) temps.push(temp);
+  }
+  if (!temps.length && m.config.placement === "multi_gpu") {
+    temps.push(...gpus.map((g) => g.temp_c).filter((temp): temp is number => temp != null));
+  }
+  return temps.length ? Math.max(...temps) : null;
 }
 
 const PERF_STAGE_LABELS: Record<string, string> = {

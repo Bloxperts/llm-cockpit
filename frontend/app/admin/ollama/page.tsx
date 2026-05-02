@@ -16,11 +16,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, streamSse } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import {
   DashboardSnapshot,
   ModelCardPayload,
+  ModelMetricsPayload,
+  COLUMN_LABELS,
   fmtBytes,
 } from "@/lib/dashboard-types";
 
@@ -75,6 +77,36 @@ interface AuditPage {
   per_page: number;
 }
 
+type ModelSortKey =
+  | "model"
+  | "calls_30d"
+  | "size"
+  | "tag"
+  | "source"
+  | "placement"
+  | "keep_alive"
+  | "cold"
+  | "tps_single"
+  | "tps_tensor"
+  | "ctx_single"
+  | "ctx_tensor"
+  | "measured";
+
+type SortState = { key: ModelSortKey; dir: "asc" | "desc" };
+
+type PerfRunState = {
+  model: string;
+  scope: "single" | "all";
+  queueTotal: number;
+  queueIndex: number;
+  startedAt: number;
+  completedDurations: number[];
+  stage: string;
+  elapsedMs: number;
+  status: "running" | "result" | "error";
+  error: string | null;
+};
+
 // --- Top-level page ------------------------------------------------------
 
 export default function AdminOllamaPage() {
@@ -117,7 +149,7 @@ export default function AdminOllamaPage() {
           </p>
         </div>
 
-        <Panel summary="Model tags" defaultOpen>
+        <Panel summary="Models" defaultOpen>
           <ModelTagsPanel />
         </Panel>
         <Panel summary="Defaults">
@@ -165,6 +197,8 @@ function ModelTagsPanel() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState>({ key: "calls_30d", dir: "desc" });
+  const [perfRun, setPerfRun] = useState<PerfRunState | null>(null);
 
   async function refresh() {
     setError(null);
@@ -177,7 +211,17 @@ function ModelTagsPanel() {
   }
 
   useEffect(() => {
-    void refresh();
+    let cancelled = false;
+    api<DashboardSnapshot>("/api/dashboard/snapshot")
+      .then((s) => {
+        if (!cancelled) setSnapshot(s);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof ApiError ? `Failed: ${e.status}` : "Failed");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function setTag(model: string, tag: TagValue) {
@@ -226,6 +270,116 @@ function ModelTagsPanel() {
     }
   }
 
+  async function updateModel(
+    model: string,
+    placement: string,
+    extras: { keep_alive_mode?: string; keep_alive_seconds?: number; num_ctx_default?: number | null } = {},
+  ) {
+    setBusy(model);
+    try {
+      await api(`/api/admin/ollama/models/${encodeURIComponent(model)}/place`, {
+        method: "POST",
+        body: JSON.stringify({ placement, ...extras }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? `Save failed: ${e.status}` : "Save failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runPerfTest(model: string, scope: "single" | "all", queueIndex = 0, queueTotal = 1) {
+    const startedAt = Date.now();
+    setPerfRun((prev) => ({
+      model,
+      scope,
+      queueTotal,
+      queueIndex,
+      startedAt,
+      completedDurations: scope === "all" ? (prev?.completedDurations ?? []) : [],
+      stage: "starting",
+      elapsedMs: 0,
+      status: "running",
+      error: null,
+    }));
+    try {
+      for await (const ev of streamSse(
+        `/api/admin/ollama/models/${encodeURIComponent(model)}/perf-test`,
+        { method: "POST", body: JSON.stringify({}) },
+      )) {
+        let data: Record<string, unknown> = {};
+        try {
+          data = ev.data ? JSON.parse(ev.data) : {};
+        } catch {
+          data = {};
+        }
+        if (ev.event === "stage" || ev.event === "progress" || ev.event === "heartbeat") {
+          setPerfRun((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  model,
+                  stage: String(data.name ?? data.stage ?? prev.stage),
+                  elapsedMs: Number(data.elapsed_ms ?? prev.elapsedMs),
+                }
+              : prev,
+          );
+        }
+        if (ev.event === "error") {
+          throw new Error(String(data.message ?? "Perf test failed"));
+        }
+      }
+      const duration = Date.now() - startedAt;
+      setPerfRun((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "result",
+              stage: "complete",
+              elapsedMs: duration,
+              completedDurations: [...prev.completedDurations, duration],
+            }
+          : prev,
+      );
+      await refresh();
+      return duration;
+    } catch (e) {
+      setPerfRun((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "error",
+              error: e instanceof Error ? e.message : "Perf test failed",
+            }
+          : prev,
+      );
+      throw e;
+    }
+  }
+
+  async function runAll() {
+    if (!snapshot || perfRun?.status === "running") return;
+    const models = sortedModels(snapshot.models, sort);
+    let completedDurations: number[] = [];
+    for (let i = 0; i < models.length; i += 1) {
+      setPerfRun((prev) => (prev ? { ...prev, completedDurations } : prev));
+      try {
+        const duration = await runPerfTest(models[i].name, "all", i, models.length);
+        completedDurations = [...completedDurations, duration];
+      } catch {
+        break;
+      }
+    }
+  }
+
+  function changeSort(key: ModelSortKey) {
+    setSort((prev) => ({
+      key,
+      dir: prev.key === key && prev.dir === "desc" ? "asc" : "desc",
+    }));
+  }
+
   if (!snapshot) {
     return (
       <div className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -234,32 +388,79 @@ function ModelTagsPanel() {
     );
   }
 
+  const rows = sortedModels(snapshot.models, sort);
+  const progress = perfRun ? perfProgress(perfRun) : null;
+
   return (
     <div className="space-y-2">
       {error ? (
         <div className="text-sm text-rose-600 dark:text-rose-400">{error}</div>
       ) : null}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-xs text-neutral-500 dark:text-neutral-400">
+          {rows.length} local model{rows.length === 1 ? "" : "s"} · tests run sequentially to avoid stacking VRAM load
+        </div>
+        <button
+          onClick={() => void runAll()}
+          disabled={!rows.length || perfRun?.status === "running"}
+          className="px-3 py-1.5 rounded text-sm bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 disabled:opacity-50"
+        >
+          Test all models
+        </button>
+      </div>
+      {progress ? (
+        <div className="rounded-md border border-neutral-200 p-3 text-xs dark:border-neutral-800">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-medium text-neutral-900 dark:text-neutral-100">
+              Testing {perfRun?.model}
+            </span>
+            <span className="font-mono text-neutral-500 dark:text-neutral-400">
+              {progress.done}/{progress.total} · ETA {progress.eta}
+            </span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded bg-neutral-100 dark:bg-neutral-800">
+            <div className="h-full bg-sky-500" style={{ width: `${progress.percent}%` }} />
+          </div>
+          <div className="mt-1 text-neutral-500 dark:text-neutral-400">
+            {perfRun?.stage} · elapsed {formatDuration(perfRun?.elapsedMs ?? 0)}
+            {perfRun?.error ? ` · ${perfRun.error}` : ""}
+          </div>
+        </div>
+      ) : null}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
             <tr>
-              <th className="text-left py-1 pr-3">Model</th>
-              <th className="text-right py-1 px-3">Size</th>
-              <th className="text-left py-1 px-3">Tag</th>
-              <th className="text-left py-1 px-3">Source</th>
+              <SortableTh label="Model" sortKey="model" sort={sort} onSort={changeSort} />
+              <SortableTh label="Calls 30d" sortKey="calls_30d" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Size" sortKey="size" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Tag" sortKey="tag" sort={sort} onSort={changeSort} />
+              <SortableTh label="Source" sortKey="source" sort={sort} onSort={changeSort} />
+              <SortableTh label="Placement" sortKey="placement" sort={sort} onSort={changeSort} />
+              <SortableTh label="Keep" sortKey="keep_alive" sort={sort} onSort={changeSort} />
+              <SortableTh label="Cold" sortKey="cold" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Tks/s single" sortKey="tps_single" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Tks/s tensor" sortKey="tps_tensor" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Ctx single" sortKey="ctx_single" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Ctx tensor" sortKey="ctx_tensor" sort={sort} onSort={changeSort} align="right" />
+              <SortableTh label="Measured" sortKey="measured" sort={sort} onSort={changeSort} />
               <th className="text-left py-1 px-3">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {snapshot.models.map((m) => {
+            {rows.map((m) => {
               const tag = (m.tag ?? "chat") as TagValue;
               const source = m.tag_source ?? "auto";
+              const single = singleProfile(m);
+              const tensor = tensorProfile(m);
+              const placement = m.config?.placement ?? "on_demand";
               return (
                 <tr
                   key={m.name}
                   className="border-t border-neutral-200 dark:border-neutral-800"
                 >
                   <td className="py-1.5 pr-3 font-mono">{m.name}</td>
+                  <td className="py-1.5 px-3 text-right">{m.calls_30d.toLocaleString()}</td>
                   <td className="py-1.5 px-3 text-right text-neutral-600 dark:text-neutral-400">
                     {fmtBytes(m.size_bytes)}
                   </td>
@@ -276,17 +477,52 @@ function ModelTagsPanel() {
                     </select>
                   </td>
                   <td className="py-1.5 px-3">
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
-                        source === "override"
-                          ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                          : "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
-                      }`}
+                    <span className={sourceBadgeClass(source)}>{source}</span>
+                  </td>
+                  <td className="py-1.5 px-3">
+                    <select
+                      value={placement}
+                      disabled={busy === m.name}
+                      onChange={(e) => void updateModel(m.name, e.target.value)}
+                      className="px-2 py-1 rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm"
                     >
-                      {source}
-                    </span>
+                      {snapshot.columns.map((c) => (
+                        <option key={c} value={c}>{COLUMN_LABELS[c] ?? c}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-1.5 px-3">
+                    <select
+                      value={keepAliveSelectValue(m)}
+                      disabled={busy === m.name}
+                      onChange={(e) => void updateModel(m.name, placement, keepAlivePayload(e.target.value))}
+                      className="px-2 py-1 rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-sm"
+                    >
+                      <option value="default">Default</option>
+                      <option value="15m">15m</option>
+                      <option value="1h">1h</option>
+                      <option value="4h">4h</option>
+                      <option value="24h">24h</option>
+                      <option value="permanent">Permanent</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </td>
+                  <td className="py-1.5 px-3 text-right font-mono">{single?.cold_load_seconds != null ? `${single.cold_load_seconds.toFixed(1)}s` : "—"}</td>
+                  <td className="py-1.5 px-3 text-right font-mono">{single?.throughput_tps != null ? single.throughput_tps.toFixed(1) : "—"}</td>
+                  <td className="py-1.5 px-3 text-right font-mono">{tensor?.throughput_tps != null ? tensor.throughput_tps.toFixed(1) : "—"}</td>
+                  <td className="py-1.5 px-3 text-right font-mono">{ctxSingle(m)?.toLocaleString() ?? "—"}</td>
+                  <td className="py-1.5 px-3 text-right font-mono">{tensor?.max_ctx_observed?.toLocaleString() ?? "—"}</td>
+                  <td className="py-1.5 px-3 text-neutral-600 dark:text-neutral-400">
+                    {latestMeasuredAt(m) ? new Date(latestMeasuredAt(m)!).toLocaleString() : "—"}
                   </td>
                   <td className="py-1.5 px-3 space-x-2">
+                    <button
+                      onClick={() => void runPerfTest(m.name, "single")}
+                      disabled={busy === m.name || perfRun?.status === "running"}
+                      className="text-xs underline text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 disabled:opacity-50"
+                    >
+                      Test
+                    </button>
                     {source === "override" ? (
                       <button
                         onClick={() => void clearOverride(m.name)}
@@ -298,7 +534,7 @@ function ModelTagsPanel() {
                     ) : null}
                     <button
                       onClick={() => void deleteModel(m)}
-                      disabled={busy === m.name}
+                      disabled={busy === m.name || perfRun?.status === "running"}
                       className="text-xs text-rose-600 dark:text-rose-400 hover:underline"
                     >
                       Delete
@@ -313,6 +549,142 @@ function ModelTagsPanel() {
       <PullModelInline onDone={() => void refresh()} />
     </div>
   );
+}
+
+function SortableTh({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = "left",
+}: {
+  label: string;
+  sortKey: ModelSortKey;
+  sort: SortState;
+  onSort: (key: ModelSortKey) => void;
+  align?: "left" | "right";
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th className={`py-1 px-3 ${align === "right" ? "text-right" : "text-left"}`}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className="inline-flex items-center gap-1 hover:text-neutral-900 dark:hover:text-neutral-100"
+      >
+        {label}
+        <span className="text-[10px]">{active ? (sort.dir === "desc" ? "v" : "^") : "-"}</span>
+      </button>
+    </th>
+  );
+}
+
+function singleProfile(m: ModelCardPayload): ModelMetricsPayload | null {
+  return (
+    m.benchmark_profiles.find((p) => p.benchmark_profile?.startsWith("gpu")) ??
+    m.benchmark_profiles.find((p) => p.benchmark_profile === "on_demand") ??
+    m.metrics ??
+    null
+  );
+}
+
+function tensorProfile(m: ModelCardPayload): ModelMetricsPayload | null {
+  return m.benchmark_profiles.find((p) => p.benchmark_profile === "multi_gpu") ?? null;
+}
+
+function ctxSingle(m: ModelCardPayload): number | null {
+  return singleProfile(m)?.max_ctx_observed ?? m.context?.max_measured_ctx ?? m.context?.max_estimated_ctx ?? null;
+}
+
+function latestMeasuredAt(m: ModelCardPayload): string | null {
+  const all = [m.metrics, ...m.benchmark_profiles].filter(Boolean) as ModelMetricsPayload[];
+  return all
+    .map((p) => p.measured_at)
+    .filter((v): v is string => Boolean(v))
+    .sort()
+    .at(-1) ?? null;
+}
+
+function sortValue(m: ModelCardPayload, key: ModelSortKey): string | number {
+  const single = singleProfile(m);
+  const tensor = tensorProfile(m);
+  if (key === "model") return m.name.toLowerCase();
+  if (key === "calls_30d") return m.calls_30d;
+  if (key === "size") return m.size_bytes;
+  if (key === "tag") return m.tag ?? "";
+  if (key === "source") return m.tag_source ?? "";
+  if (key === "placement") return m.config?.placement ?? "";
+  if (key === "keep_alive") return keepAliveSelectValue(m);
+  if (key === "cold") return single?.cold_load_seconds ?? -1;
+  if (key === "tps_single") return single?.throughput_tps ?? -1;
+  if (key === "tps_tensor") return tensor?.throughput_tps ?? -1;
+  if (key === "ctx_single") return ctxSingle(m) ?? -1;
+  if (key === "ctx_tensor") return tensor?.max_ctx_observed ?? -1;
+  if (key === "measured") return latestMeasuredAt(m) ?? "";
+  return "";
+}
+
+function sortedModels(models: ModelCardPayload[], sort: SortState): ModelCardPayload[] {
+  return [...models].sort((a, b) => {
+    const av = sortValue(a, sort.key);
+    const bv = sortValue(b, sort.key);
+    const result =
+      typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av).localeCompare(String(bv));
+    return sort.dir === "asc" ? result : -result;
+  });
+}
+
+function keepAliveSelectValue(m: ModelCardPayload): string {
+  if (m.config.keep_alive_mode === "permanent") return "permanent";
+  if (m.config.keep_alive_seconds === 900) return "15m";
+  if (m.config.keep_alive_seconds === 3600) return "1h";
+  if (m.config.keep_alive_seconds === 14400) return "4h";
+  if (m.config.keep_alive_seconds === 86400) return "24h";
+  if (m.config.keep_alive_mode === "finite") return "custom";
+  return "default";
+}
+
+function keepAlivePayload(value: string) {
+  if (value === "permanent") return { keep_alive_mode: "permanent" };
+  if (value === "15m") return { keep_alive_mode: "finite", keep_alive_seconds: 900 };
+  if (value === "1h") return { keep_alive_mode: "finite", keep_alive_seconds: 3600 };
+  if (value === "4h") return { keep_alive_mode: "finite", keep_alive_seconds: 14400 };
+  if (value === "24h") return { keep_alive_mode: "finite", keep_alive_seconds: 86400 };
+  return {};
+}
+
+function sourceBadgeClass(source: string) {
+  return `px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
+    source === "override"
+      ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+      : "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+  }`;
+}
+
+function perfProgress(run: PerfRunState) {
+  const done = Math.min(run.queueTotal, run.queueIndex + (run.status === "result" ? 1 : 0));
+  const currentElapsed = run.elapsedMs || Date.now() - run.startedAt;
+  const average =
+    run.completedDurations.length > 0
+      ? run.completedDurations.reduce((sum, value) => sum + value, 0) / run.completedDurations.length
+      : currentElapsed;
+  const remaining = Math.max(0, run.queueTotal - run.queueIndex - 1) * average + (run.status === "running" ? Math.max(average - currentElapsed, 0) : 0);
+  return {
+    done,
+    total: run.queueTotal,
+    percent: Math.max(3, Math.min(100, (done / run.queueTotal) * 100)),
+    eta: formatDuration(remaining),
+  };
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${rest}s`;
 }
 
 function PullModelInline({ onDone }: { onDone: () => void }) {
@@ -527,7 +899,17 @@ function MetricsPanel() {
   }
 
   useEffect(() => {
-    void refresh();
+    let cancelled = false;
+    api<ModelMetricsRow[]>("/api/admin/ollama/metrics")
+      .then((data) => {
+        if (!cancelled) setRows(data);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof ApiError ? `Failed: ${e.status}` : "Failed");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function openDrill(model: string) {
@@ -714,12 +1096,17 @@ function AuditPanel() {
   }, [page, perPage, appliedFilters]);
 
   useEffect(() => {
-    setError(null);
+    let cancelled = false;
     api<AuditPage>(`/api/admin/audit?${queryString}`)
-      .then((d) => setData(d))
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
       .catch((e) => {
-        setError(e instanceof ApiError ? `Failed: ${e.status}` : "Failed");
+        if (!cancelled) setError(e instanceof ApiError ? `Failed: ${e.status}` : "Failed");
       });
+    return () => {
+      cancelled = true;
+    };
   }, [queryString]);
 
   function applyFilters() {

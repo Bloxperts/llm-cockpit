@@ -7,10 +7,11 @@
 **User Spec:** [`../../use-cases/UC-10-ollama-configuration.md`](../../use-cases/UC-10-ollama-configuration.md)
 **Test Spec:** [`../test/UC-10-ollama-configuration.md`](../test/UC-10-ollama-configuration.md)
 **Bound DG:** DG-004 — extends UC-07's `LLMChat` port with `pull_model` / `delete_model` write methods. Block at end of file.
+**2026-05-02 amendment:** `/admin/ollama` now also acts as the dense model-management list so the dashboard cards can stay compact.
 
 ## Goal
 
-A single admin page that lets the cockpit's admin keep Ollama tidy without SSH'ing in: tag models chat / code / both, pull new models, delete unused models, edit the default code-mode system prompt, and inspect metrics + audit log.
+A single admin page that lets the cockpit's admin keep Ollama tidy without SSH'ing in: compare/sort all model facts, tag models chat / code / both, change placement and keep-alive, run per-model or sequential all-model performance tests, delete unused models, edit the default code-mode system prompt, and inspect metrics + audit log.
 
 ## Data model additions
 
@@ -55,7 +56,10 @@ All routes gated by `Depends(require_role("admin"))` per ADR-004.
 ## Frontend layout
 
 - `/admin/ollama` — four panels (collapsible), as described in the User Spec:
-  1. **Model tags** — table of models with tag column + override action. Side drawer for `pull` progress.
+  1. **Models** — dense sortable table with calls 30d, size, tag/source,
+     placement, keep-alive, cold load, single/tensor tokens/s, single/tensor
+     context, latest benchmark, per-model test, delete, and sequential
+     "Test all models" progress/ETA.
   2. **Defaults** — text area for `code_default_system_prompt`, code-editor for `tag_heuristics_yaml`. Save button per panel.
   3. **Per-model metrics** — sortable table; click row → drawer with last 50 calls.
   4. **Audit log** — paginated, filterable, CSV export.

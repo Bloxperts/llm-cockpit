@@ -28,6 +28,8 @@ from cockpit.db import make_engine, make_session_factory, upgrade_to_head
 from cockpit.main import create_app
 from cockpit.models import (
     AdminAudit,
+    Conversation,
+    Message,
     MetricsSnapshot,
     ModelConfig,
     ModelPerf,
@@ -275,6 +277,24 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
     )
     with session_factory() as session:
         # Pre-seed a model_tag so the card carries 'chat'.
+        user = User(username="u", pw_hash="x", role="chat")
+        session.add(user)
+        session.flush()
+        conv = Conversation(user_id=user.id, mode="chat", model="gemma3:27b")
+        session.add(conv)
+        session.flush()
+        session.add_all(
+            [
+                Message(conversation_id=conv.id, role="assistant", content="new", model="gemma3:27b"),
+                Message(
+                    conversation_id=conv.id,
+                    role="assistant",
+                    content="old",
+                    model="gemma3:27b",
+                    ts=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=31),
+                ),
+            ]
+        )
         session.add(ModelTag(model="gemma3:27b", tag="chat", source="auto"))
         session.commit()
 
@@ -287,6 +307,7 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
     card = snap.models[0]
     assert card.name == "gemma3:27b"
     assert card.tag == "chat"
+    assert card.calls_30d == 1
     assert card.actual.loaded is True
     assert card.metadata.release_date_label is not None
     assert card.context.estimate_confidence in {"unknown", "estimated", "measured"}

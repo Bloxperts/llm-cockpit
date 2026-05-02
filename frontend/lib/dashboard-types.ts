@@ -104,6 +104,7 @@ export interface ModelCardPayload {
   tag: string | null;
   tag_source: string | null;
   size_bytes: number;
+  calls_30d: number;
   metadata: ModelMetadataPayload;
   config: ModelConfigPayload;
   actual: ModelActualPayload;

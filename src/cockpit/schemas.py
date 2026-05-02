@@ -163,6 +163,7 @@ class ModelCardPayload(BaseModel):
     tag: str | None
     tag_source: str | None = None
     size_bytes: int
+    calls_30d: int = 0
     metadata: ModelMetadataPayload = Field(default_factory=ModelMetadataPayload)
     config: ModelConfigPayload
     actual: ModelActualPayload

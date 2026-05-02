@@ -31,8 +31,8 @@ fi
 cd "$FRONTEND_DIR"
 
 if [ ! -d node_modules ]; then
-  echo "[build-frontend] running npm install (no lockfile sync) ..."
-  npm install --no-audit --no-fund
+  echo "[build-frontend] running npm ci from package-lock.json ..."
+  npm ci --no-audit --no-fund
 fi
 
 echo "[build-frontend] running next build (static export) ..."

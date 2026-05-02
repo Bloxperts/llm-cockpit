@@ -25,14 +25,16 @@ import logging
 import statistics
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from dataclasses import field as dc_field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func as sqlfunc
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from cockpit.models import MetricsSnapshot, ModelConfig, ModelMetadata, ModelPerf, ModelTag
+from cockpit.models import Message, MetricsSnapshot, ModelConfig, ModelMetadata, ModelPerf, ModelTag
 from cockpit.ports.llm_chat import (
     LLMChat,
     LoadedModel,
@@ -67,8 +69,8 @@ class GpuSamplerState:
 
 @dataclass
 class ModelStateSamplerState:
-    available_models: list[ModelInfo] = field(default_factory=list)
-    loaded_models: list[LoadedModel] = field(default_factory=list)
+    available_models: list[ModelInfo] = dc_field(default_factory=list)
+    loaded_models: list[LoadedModel] = dc_field(default_factory=list)
     last_success_at: float | None = None
     last_error: str | None = None
     last_error_at: float | None = None
@@ -785,6 +787,7 @@ def _build_model_card(
     perf: dict[str, Any] | None,
     benchmark_profiles: list[dict[str, Any]],
     metadata: ModelMetadata | None,
+    calls_30d: int,
     gpus: list[GpuSnapshot],
 ) -> dict[str, Any]:
     placement = _dashboard_placement(config.placement if config is not None else None)
@@ -827,6 +830,7 @@ def _build_model_card(
         "tag": tag,
         "tag_source": tag_source,
         "size_bytes": info.size_bytes,
+        "calls_30d": calls_30d,
         "metadata": metadata_payload,
         "config": config_payload,
         "actual": actual,
@@ -858,6 +862,7 @@ def assemble_dashboard_snapshot(
     """
     now = now if now is not None else time.monotonic()
     wall_now = datetime.now(UTC)
+    db_cutoff_30d = wall_now.replace(tzinfo=None) - timedelta(days=30)
     snapshots = gpu_state.last_snapshots or []
     gpus_payload = [_serialize_gpu(s) for s in snapshots]
     columns = _columns_for(len(snapshots))
@@ -885,10 +890,23 @@ def assemble_dashboard_snapshot(
                 select(ModelMetadata).where(ModelMetadata.model.in_(model_names))
             ).scalars()
         }
+        calls_30d = {
+            row.model: int(row.calls)
+            for row in session.execute(
+                select(Message.model, sqlfunc.count(Message.id).label("calls"))
+                .where(
+                    Message.role == "assistant",
+                    Message.model.in_(model_names),
+                    Message.ts >= db_cutoff_30d,
+                )
+                .group_by(Message.model)
+            )
+        }
     else:
         configs = {}
         tags = {}
         metadata = {}
+        calls_30d = {}
 
     models_payload = [
         _build_model_card(
@@ -900,6 +918,7 @@ def assemble_dashboard_snapshot(
             perf=_last_perf_for(session, info.name, now=wall_now),
             benchmark_profiles=_latest_perf_profiles_for(session, info.name, now=wall_now),
             metadata=metadata.get(info.name),
+            calls_30d=calls_30d.get(info.name, 0),
             gpus=snapshots,
         )
         for info in model_state.available_models

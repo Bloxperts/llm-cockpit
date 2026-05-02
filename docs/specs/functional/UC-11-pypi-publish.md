@@ -1,4 +1,4 @@
-<!-- Status: Review | Version: 0.1 | Created: 2026-04-29 | Updated: 2026-04-29 -->
+<!-- Status: Review | Version: 0.2 | Created: 2026-04-29 | Updated: 2026-05-02 -->
 # UC-11 - Functional Spec - Public PyPI publishing
 
 **Status:** Review
@@ -15,7 +15,7 @@ Make `llm-cockpit` publishable and installable from PyPI with a repeatable tag-b
 
 Target release: `v1.0.0`.
 
-Rationale: Sprint 12 is the public PyPI release. Sprint 11 must first make the UI and remaining product functionality release-quality; PyPI is the `1.0.0` gate.
+Rationale: Sprint 12 is the public PyPI release. Sprint 11 must first make the UI and remaining product functionality release-quality; PyPI is the `1.0.0` gate. Current pre-1.0 hardening releases may continue as `v0.5.x` / beta tags until every acceptance criterion below passes.
 
 ## Required changes
 
@@ -27,7 +27,7 @@ Update `pyproject.toml` so packaging checks pass cleanly:
 - add `project.urls` for Homepage, Repository, Issues, Changelog, and Documentation;
 - confirm Python version classifiers match `requires-python >=3.12`;
 - confirm package data includes `frontend_dist`, migrations, and default config files;
-- decide whether `Development Status :: 3 - Alpha` still fits for `v0.5.0`.
+- use `Development Status :: 4 - Beta` until the first public `v1.0.0` release.
 
 ### Repository release files
 
@@ -42,7 +42,7 @@ Ensure the repo contains:
 
 Create or update a local build command that:
 
-1. installs frontend dependencies from `frontend/package-lock.json`;
+1. installs frontend dependencies from `frontend/package-lock.json` with `npm ci`;
 2. builds the Next.js static frontend;
 3. syncs/copies the built frontend into `src/cockpit/frontend_dist`;
 4. builds wheel and sdist;
@@ -76,6 +76,35 @@ Document the one-time PyPI setup:
 - record whether the first release uses TestPyPI first.
 
 Do not store PyPI API tokens in the repo.
+
+### Current 2026-05-02 readiness snapshot
+
+Done in the pre-1.0 hardening block:
+
+- package metadata has SPDX-style license, public URLs, beta classifier, and `LICENSE`;
+- frontend build script uses `npm ci` when dependencies need installation;
+- CI, TestPyPI, and production tag release workflow skeletons exist;
+- GitHub Actions environments `testpypi` and `pypi` exist;
+- dashboard/admin model UI is split so the release UI no longer depends on dense cards.
+
+Trusted Publisher configuration to create in PyPI/TestPyPI:
+
+| Index | Project | Owner | Repository | Workflow | Environment |
+|---|---|---|---|---|---|
+| TestPyPI | `llm-cockpit` | `Bloxperts` | `llm-cockpit` | `testpypi.yml` | `testpypi` |
+| PyPI | `llm-cockpit` | `Bloxperts` | `llm-cockpit` | `release.yml` | `pypi` |
+
+If the project does not exist yet, create a **pending publisher**. This does
+not reserve the name until the first successful publish.
+
+Still required before advertising `v1.0.0` on PyPI:
+
+- run a clean build that refreshes `src/cockpit/frontend_dist`;
+- `python -m build` and `twine check dist/*`;
+- isolated local-wheel install smoke;
+- Neuroforge `cockpit-admin doctor` smoke;
+- TestPyPI publish from the `TestPyPI` workflow or documented trusted-publisher/account blocker;
+- Chris explicitly says "go publish PyPI".
 
 ### UC-08 Slice E reconcile
 

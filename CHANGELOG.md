@@ -3,6 +3,31 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v0.5.7] — 2026-05-02 — Release-readiness model management pass
+
+Patch release for the pre-1.0 admin/model-management sweep.
+
+### Changed — Dashboard
+
+- Model cards now show only the release-relevant comparison fields:
+  30-day calls, cold load, single-GPU and tensor/multi-GPU tokens/s,
+  single-GPU and tensor/multi-GPU context, and a temperature-backed heat
+  indicator.
+- Dashboard snapshots now include `calls_30d` per local model.
+
+### Changed — Admin
+
+- `/admin/ollama` now exposes a sortable model-management table with
+  placement, keep-alive, tag, performance metrics, per-model test, delete,
+  and sequential "Test all models" progress/ETA.
+
+### Changed — Release
+
+- Package metadata now has public project URLs, SPDX-style license metadata,
+  a `LICENSE` file, and beta classifier.
+- Frontend build automation uses `npm ci` from `package-lock.json` when
+  dependencies are absent.
+
 ## [v0.5.6] — 2026-05-02 — Ollama catalog loader
 
 Patch release for model loading.

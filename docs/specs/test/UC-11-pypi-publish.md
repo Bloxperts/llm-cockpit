@@ -1,4 +1,4 @@
-<!-- Status: Review | Version: 0.1 | Created: 2026-04-29 | Updated: 2026-04-29 -->
+<!-- Status: Review | Version: 0.2 | Created: 2026-04-29 | Updated: 2026-05-02 -->
 # UC-11 - Test Spec - Public PyPI publishing
 
 **Status:** Review
@@ -26,9 +26,9 @@ This is a release-engineering user story. Tests are mostly build, metadata, inst
 
 | ID | Description | Expected |
 |----|-------------|----------|
-| M-01 | Install local wheel on Neuroforge with `pipx install --force dist/llm_cockpit-1.0.0-py3-none-any.whl`. | `~/.local/bin/cockpit-admin --version` prints `1.0.0`. |
+| M-01 | Install local wheel on Neuroforge with `pipx install --force dist/llm_cockpit-<version>-py3-none-any.whl`. | `~/.local/bin/cockpit-admin --version` prints the wheel version. For public PyPI final, that version must be `1.0.0`. |
 | M-02 | Run `cockpit-admin doctor` on Neuroforge against `/home/bloxperts/.local/share/llm-cockpit` and local Ollama. | All checks OK. |
-| M-03 | TestPyPI or dry-run path. | Documented and either exercised successfully or blocked by an account/permission note. |
+| M-03 | TestPyPI trusted-publisher path. | Configure a pending publisher on TestPyPI with owner `Bloxperts`, repo `llm-cockpit`, workflow `testpypi.yml`, environment `testpypi`; then run the `TestPyPI` workflow manually. If account/project setup blocks it, record the blocker. |
 | M-04 | Production PyPI publish, only after Chris says "go publish PyPI". | `pipx install llm-cockpit` installs the same version as the GitHub release tag. |
 
 ## Pass criteria

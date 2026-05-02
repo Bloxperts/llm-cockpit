@@ -79,7 +79,9 @@ export default function AdminUsersPage() {
   );
 
   useEffect(() => {
-    if (me?.role === "admin") void refresh();
+    if (me?.role !== "admin") return;
+    const id = window.setTimeout(() => void refresh(), 0);
+    return () => window.clearTimeout(id);
   }, [me, refresh]);
 
   if (!me || me.role !== "admin") {

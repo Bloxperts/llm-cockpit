@@ -221,7 +221,9 @@ export function ChatShell({ mode: preferredMode = "chat" }: { mode?: ChatMode })
   }, [canUseCode, refreshConversations, refreshFiles, sections]);
 
   useEffect(() => {
-    if (activeMode === "code" && !canUseCode) setActiveMode("chat");
+    if (activeMode !== "code" || canUseCode) return;
+    const id = window.setTimeout(() => setActiveMode("chat"), 0);
+    return () => window.clearTimeout(id);
   }, [activeMode, canUseCode]);
 
   // Auto-scroll on new content (only when user is already at the bottom).

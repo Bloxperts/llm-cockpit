@@ -10,7 +10,7 @@
 **Sprint 11 (open) — UI refresh + release-readiness before PyPI.**
 
 **Window:** 2026-04-30 — open.
-**Target release:** `v0.5.0`.
+**Target release:** `v0.5.7` beta, with `v1.0.0` still reserved for the public PyPI sprint.
 
 **Goal**
 
@@ -23,7 +23,7 @@
 | Item | Spec | Plan | Status |
 |---|---|---|---|
 | UC-12 UI refresh and interaction polish | Use Case / Functional / Test specs Accepted (2026-04-30) | Hybrid design direction: operational dashboard + premium chat/code workspace. Smooth app shell, dashboard/model cards, drag-and-drop placement board with fallback, perf-test drawer polish, admin page alignment, responsive/focus/loading/error states, browser smoke screenshots. | In Progress — Chris accepted UC-12 on 2026-04-30. |
-| Release-readiness functional sweep | Existing UC-01..UC-10 Accepted/User Accepted | Keep all current functionality live while the UI changes; fix release-blocking regressions or obvious functionality gaps discovered during the redesign. | Planning — bounded by existing accepted specs. |
+| Release-readiness functional sweep | Existing UC-01..UC-11 Review + UC-12 Accepted | Keep all current functionality live while the UI changes; fix release-blocking regressions or obvious functionality gaps discovered during the redesign. | In Progress — model-card/admin split, package metadata, CI/release workflow scaffolding, and frontend bundle refresh are being handled as one block. |
 
 **Out of scope:** Public PyPI publishing (`v1.0.0` / Sprint 12), GPU hard-isolation architecture, Docker image publishing, Homebrew/apt/winget packages, off-LAN TLS/reverse-proxy work, v2 backlog (external access, mobile/PWA).
 
@@ -35,6 +35,18 @@
 - 2026-04-30: Chris changed the release sequence: UI and all remaining functionality must be live before PyPI. PyPI moves to Sprint 12 as the `1.0.0` release sprint.
 - 2026-04-30: UC-12 three-doc spec set drafted in Review. Recommended design direction is **Hybrid: Admin Dashboard + Premium Chat** with an operational placement board.
 - 2026-04-30: Chris accepted UC-12. Sprint 11 is open for implementation.
+- 2026-05-02: Model-card complexity moved off the dashboard into `/admin/ollama`.
+  Public PyPI `v1.0.0` remains blocked until clean package build, local wheel
+  install smoke, TestPyPI/dry-run, and owner approval.
+- 2026-05-02: Neuroforge local-wheel smoke passed with `llm-cockpit 0.5.7`
+  installed via `pipx --suffix=-smoke`; `doctor` passed against
+  `/home/bloxperts/.local/share/llm-cockpit` and local Ollama. Temporary smoke
+  venv was removed.
+- 2026-05-02: TestPyPI Trusted Publisher path is implemented as
+  `.github/workflows/testpypi.yml`; GitHub environments `testpypi` and `pypi`
+  are created. Remaining blocker is PyPI/TestPyPI account setup: add pending
+  publisher for owner `Bloxperts`, repo `llm-cockpit`, workflow
+  `testpypi.yml`, environment `testpypi`.
 
 ---
 

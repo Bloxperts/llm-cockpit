@@ -1,4 +1,4 @@
-<!-- Status: Review | Version: 0.1 | Created: 2026-04-29 | Updated: 2026-04-29 -->
+<!-- Status: Review | Version: 0.2 | Created: 2026-04-29 | Updated: 2026-05-02 -->
 # UC-11 - Use Case - Public PyPI publishing
 
 **Status:** Review
@@ -69,3 +69,5 @@ Out:
 
 - This is the backlog item previously called "PyPI publish sprint". It was moved from Sprint 11 to Sprint 12 after Chris decided that the UI and remaining functionality should be live before the public `1.0.0` PyPI release.
 - If PyPI project-name ownership or account setup blocks automation, Sprint 11 may close with TestPyPI + documented manual production steps, but the blocker must be recorded in `SPRINT_STATE.md`.
+- `v0.5.x` beta builds may be created from this hardening work, but public
+  PyPI advertising waits for the `v1.0.0` acceptance criteria.
