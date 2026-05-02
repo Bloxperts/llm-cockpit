@@ -69,6 +69,11 @@
   that the approved public PyPI publish should carry the `1.0.0` version. The
   earlier `v0.5.7` remains as a published beta/history artifact; `v1.0.0` is
   the public release line to advertise.
+- 2026-05-02: Tag `v1.0.0` published successfully via release run
+  `25254053238`; PyPI simple index shows `llm-cockpit (1.0.0)` with available
+  versions `1.0.0, 0.5.7`. Neuroforge was upgraded to PyPI
+  `llm-cockpit==1.0.0`; `cockpit-admin --version` reports `1.0.0` and
+  `doctor` remains green.
 
 ---
 
