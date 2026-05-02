@@ -1122,6 +1122,43 @@ def test_place_503_when_ollama_unreachable(settings: Settings, seeded_users: dic
     assert r.json()["detail"]["detail"] == "ollama_unreachable"
 
 
+def test_place_502_when_ollama_rejects_load_rolls_back_config(
+    settings: Settings, seeded_users: dict, session_factory: sessionmaker
+) -> None:
+    """Ollama load failures should be actionable and not persist the failed placement."""
+
+    class RejectingChat(FakeLLMChat):
+        async def chat_stream(self, **_kwargs):
+            raise OllamaResponseError(500, '{"error":"model failed to load"}')
+            yield  # unreachable but makes this an async generator
+
+    with session_factory() as session:
+        session.add(ModelConfig(model="m", placement="on_demand", keep_alive_mode="unload"))
+        session.commit()
+
+    chat = RejectingChat(models=[model_info("m")])
+    client = _build_client(
+        settings,
+        chat=chat,
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]),
+        skip_samplers=True,
+    )
+    with client:
+        _seed_gpu_state(client, gpu_count=1)
+        _login_admin(client, seeded_users)
+        r = client.post(
+            "/api/admin/ollama/models/m/place",
+            json={"placement": "gpu0"},
+        )
+
+    assert r.status_code == 502
+    assert r.json()["detail"]["detail"] == "ollama_place_failed"
+    with session_factory() as session:
+        cfg = session.execute(select(ModelConfig).where(ModelConfig.model == "m")).scalar_one()
+        assert cfg.placement == "on_demand"
+        assert cfg.keep_alive_mode == "unload"
+
+
 def test_pull_emits_error_event_on_unreachable(settings: Settings, seeded_users: dict) -> None:
     class UnreachablePullChat(FakeLLMChat):
         async def pull_model(self, model: str):

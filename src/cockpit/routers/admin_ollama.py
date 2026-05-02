@@ -392,7 +392,9 @@ async def place_model(
     expected_main_gpu = _expected_main_gpu(placement)
     should_be_loaded = _placement_should_be_loaded(placement)
 
-    # UPSERT first so observers see the desired state even if warm-up fails.
+    # UPSERT before the Ollama call so the generated options are persisted on
+    # success. If Ollama rejects the load/unload, the route rolls back below so
+    # operators do not see a desired placement that never became actionable.
     cfg = db.query(ModelConfig).filter_by(model=model).first()
     old_placement = _normalize_placement(cfg.placement if cfg is not None else None)
     cfg = _upsert_model_config(
@@ -424,9 +426,21 @@ async def place_model(
                     try:
                         await _warm_up(chat, model, options)
                     except OllamaModelNotFound:
+                        db.rollback()
                         raise HTTPException(404, detail="model_not_found")
                     except OllamaUnreachableError as exc:
+                        db.rollback()
                         raise HTTPException(503, detail={"detail": "ollama_unreachable", "cause": str(exc)})
+                    except OllamaResponseError as exc:
+                        db.rollback()
+                        raise HTTPException(
+                            502,
+                            detail={
+                                "detail": "ollama_place_failed",
+                                "status": exc.status,
+                                "cause": exc.body,
+                            },
+                        ) from exc
 
                     if should_be_loaded:
                         loaded_now = await _wait_loaded(chat, model, timeout_s=LOADED_CONFIRMATION_TIMEOUT_S)
