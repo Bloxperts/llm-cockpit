@@ -91,6 +91,7 @@ class ModelConfigPayload(BaseModel):
 class ModelActualPayload(BaseModel):
     loaded: bool
     vram_mb: int | None
+    expires_at: str | None = None
     main_gpu_actual: int | None
     gpu_layout: dict[str, int] | None = None
     mismatch: bool
