@@ -59,6 +59,12 @@
   `fastapi<1.0` constraint for TestPyPI smoke installs because TestPyPI contains
   an unrelated `FASTAPI-1.0` package that can otherwise shadow the real PyPI
   dependency.
+- 2026-05-02: Production PyPI trusted publisher was configured and tag
+  `v0.5.7` published successfully via release run `25253607729`. PyPI simple
+  index shows `llm-cockpit (0.5.7)` for Python 3.12+ clients. Neuroforge was
+  upgraded from the previous local-wheel `0.5.6` install to PyPI
+  `llm-cockpit==0.5.7` with `pipx install --force`; `cockpit-admin --version`
+  reports `0.5.7` and `doctor` is green against local Ollama and data dir.
 
 ---
 
