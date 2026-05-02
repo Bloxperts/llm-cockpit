@@ -195,7 +195,7 @@ export default function DashboardPage() {
     } catch (e) {
       setSnapshot(previous);
       if (e instanceof ApiError) {
-        setPlacementError(`Place failed: HTTP ${e.status}`);
+        setPlacementError(apiErrorSummary("Place failed", e));
       } else {
         setPlacementError("Place failed.");
       }
@@ -1099,6 +1099,21 @@ function fmtMb(value: number | null | undefined) {
   return `${Math.round(value)} MB`;
 }
 
+function apiErrorSummary(prefix: string, error: ApiError) {
+  const detail = error.detail;
+  if (detail && typeof detail === "object" && "detail" in detail) {
+    const nested = (detail as { detail?: unknown }).detail;
+    if (nested && typeof nested === "object") {
+      const code = "detail" in nested ? String((nested as { detail?: unknown }).detail ?? "") : "";
+      const cause = "cause" in nested ? String((nested as { cause?: unknown }).cause ?? "") : "";
+      const parts = [code.replace(/_/g, " "), cause].filter(Boolean);
+      if (parts.length) return `${prefix}: ${parts.join(" - ")}`;
+    }
+    if (typeof nested === "string") return `${prefix}: ${nested.replace(/_/g, " ")}`;
+  }
+  return `${prefix}: HTTP ${error.status}`;
+}
+
 function formatExpiresAt(value: string | null | undefined) {
   if (!value) return "permanent";
   const expires = new Date(value);
@@ -1424,7 +1439,9 @@ function ModelCardView({
             ? "not in VRAM"
             : "idle";
   const residencyDetail = m.actual.loaded
-    ? `Loaded until ${formatExpiresAt(m.actual.expires_at)}`
+    ? requestedWarm
+      ? `Loaded until ${formatExpiresAt(m.actual.expires_at)}`
+      : `Still in VRAM despite ${COLUMN_LABELS[placement] ?? placement}; Ollama has not unloaded it yet.`
     : requestedWarm
       ? "Requested warm, but Ollama is not keeping it loaded."
       : "Loads on first request.";
