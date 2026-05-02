@@ -586,6 +586,37 @@ def test_place_on_demand_sends_keep_alive_zero(settings: Settings, seeded_users:
     assert unload["options"]["keep_alive"] == 0
 
 
+def test_place_warm_resets_prior_unload_keep_alive(
+    settings: Settings, seeded_users: dict, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        session.add(ModelConfig(model="m", placement="on_demand", keep_alive_mode="unload"))
+        session.commit()
+
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        loaded=[LoadedModel(name="m", size_vram=1, until=None)],
+        tokens=["ok"],
+    )
+    client = _build_client(
+        settings,
+        chat=chat,
+        telemetry=FakeTelemetry(snapshots=[gpu_snapshot(0)]),
+        skip_samplers=True,
+    )
+    with client:
+        _seed_gpu_state(client, gpu_count=1)
+        _login_admin(client, seeded_users)
+        r = client.post("/api/admin/ollama/models/m/place", json={"placement": "gpu0"})
+
+    assert r.status_code == 200, r.text
+    assert chat.calls_of("chat_stream")[0]["options"]["keep_alive"] == 24 * 3600
+    with session_factory() as session:
+        cfg = session.execute(select(ModelConfig).where(ModelConfig.model == "m")).scalar_one()
+        assert cfg.placement == "gpu0"
+        assert cfg.keep_alive_mode == "default"
+
+
 def test_place_invalid_placement_returns_422(settings: Settings, seeded_users: dict) -> None:
     """T-25."""
     chat = FakeLLMChat(models=[model_info("m")])
@@ -688,6 +719,63 @@ def test_place_detects_main_gpu_mismatch(settings: Settings, seeded_users: dict)
     body = r.json()
     assert body["mismatch"] is True
     assert body["main_gpu_actual"] == 1
+
+
+def test_place_translates_ollama_gpu_order_from_recent_audit(
+    settings: Settings, seeded_users: dict, session_factory: sessionmaker
+) -> None:
+    with session_factory() as session:
+        session.add_all(
+            [
+                AdminAudit(
+                    action="model_place",
+                    target_model="a",
+                    details_json=json.dumps(
+                        {"applied": {"main_gpu": 0}, "main_gpu_actual": 1}
+                    ),
+                ),
+                AdminAudit(
+                    action="model_place",
+                    target_model="b",
+                    details_json=json.dumps(
+                        {"applied": {"main_gpu": 1}, "main_gpu_actual": 0}
+                    ),
+                ),
+            ]
+        )
+        session.commit()
+
+    chat = FakeLLMChat(
+        models=[model_info("m")],
+        loaded=[LoadedModel(name="m", size_vram=1, until=None)],
+        tokens=["ok"],
+    )
+
+    snapshots_before = [
+        gpu_snapshot(0, vram_used_mb=2000),
+        gpu_snapshot(1, vram_used_mb=2000),
+    ]
+    snapshots_after = [
+        gpu_snapshot(0, vram_used_mb=18000),
+        gpu_snapshot(1, vram_used_mb=2000),
+    ]
+    call_count = {"n": 0}
+
+    class MappedTelemetry(FakeTelemetry):
+        async def sample(self):
+            call_count["n"] += 1
+            return snapshots_before if call_count["n"] == 1 else snapshots_after
+
+    client = _build_client(settings, chat=chat, telemetry=MappedTelemetry(snapshots=[]), skip_samplers=True)
+    with client:
+        _seed_gpu_state(client, gpu_count=2)
+        _login_admin(client, seeded_users)
+        r = client.post("/api/admin/ollama/models/m/place", json={"placement": "gpu0"})
+
+    assert r.status_code == 200, r.text
+    assert chat.calls_of("chat_stream")[0]["options"]["main_gpu"] == 1
+    assert r.json()["mismatch"] is False
+    assert r.json()["main_gpu_actual"] == 0
 
 
 def test_place_requires_admin(settings: Settings, seeded_users: dict) -> None:
