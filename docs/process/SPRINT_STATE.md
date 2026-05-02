@@ -52,6 +52,13 @@
   `invalid-publisher`. The OIDC claims matched the intended config:
   `repo:Bloxperts/llm-cockpit:environment:testpypi` and workflow
   `.github/workflows/testpypi.yml@refs/heads/develop`.
+- 2026-05-02: TestPyPI pending publisher was configured and rerun
+  `25253214697` succeeded. Uploaded `llm-cockpit 0.5.7` wheel/sdist to
+  TestPyPI via trusted publishing. Simple-index check with Python 3.14 showed
+  `llm-cockpit (0.5.7)`, and a fresh venv installed the TestPyPI wheel; use a
+  `fastapi<1.0` constraint for TestPyPI smoke installs because TestPyPI contains
+  an unrelated `FASTAPI-1.0` package that can otherwise shadow the real PyPI
+  dependency.
 
 ---
 
