@@ -3,6 +3,19 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v1.0.0] — 2026-05-02 — Public PyPI release
+
+First public PyPI release of LLM Cockpit.
+
+### Release
+
+- Published `llm-cockpit` to PyPI through GitHub Actions trusted publishing.
+- Verified the same release path on TestPyPI before production publishing.
+- Installed the PyPI package on Neuroforge with `pipx` and verified
+  `cockpit-admin --version` plus `cockpit-admin doctor`.
+- Marks the release-readiness model-management pass as the public `1.0.0`
+  baseline.
+
 ## [v0.5.7] — 2026-05-02 — Release-readiness model management pass
 
 Patch release for the pre-1.0 admin/model-management sweep.

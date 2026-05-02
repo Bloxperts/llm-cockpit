@@ -1,6 +1,6 @@
 # Status
 
-**Version:** 0.5.7 beta — pre-1.0 release hardening **Date:** 2026-05-02
+**Version:** 1.0.0 — public PyPI release **Date:** 2026-05-02
 
 ## What runs today
 
@@ -11,18 +11,17 @@
 - The FastAPI process serves the bundled Next.js static export from
   `src/cockpit/frontend_dist`.
 
-## Current release gate
+## Current release status
 
-The product is not yet public-PyPI `v1.0.0`. Remaining release gates:
+The product is published on PyPI as `llm-cockpit` and can be installed with
+`pipx install llm-cockpit`. The public release path has passed:
 
-1. Build the fresh frontend static export into `src/cockpit/frontend_dist`.
-2. Build wheel + sdist from a clean tree.
-3. Run `twine check dist/*`.
-4. Install the local wheel in an isolated environment.
-5. Run `cockpit-admin --version`, `cockpit-admin init`, `cockpit-admin serve`,
-   and `cockpit-admin doctor` as a smoke.
-6. Exercise TestPyPI or document the exact account/trusted-publisher blocker.
-7. Publish production PyPI only after Chris explicitly says "go publish PyPI".
+1. Fresh frontend static export bundled into `src/cockpit/frontend_dist`.
+2. Clean wheel + sdist build.
+3. `twine check dist/*`.
+4. TestPyPI trusted-publisher publish.
+5. Production PyPI trusted-publisher publish.
+6. Neuroforge install from PyPI plus `cockpit-admin doctor`.
 
 ## What you need on Neuroforge to run this
 

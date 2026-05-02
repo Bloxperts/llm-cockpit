@@ -1,7 +1,7 @@
-<!-- Status: Review | Version: 0.2 | Created: 2026-04-29 | Updated: 2026-05-02 -->
+<!-- Status: Done | Version: 0.3 | Created: 2026-04-29 | Updated: 2026-05-02 -->
 # UC-11 - Functional Spec - Public PyPI publishing
 
-**Status:** Review
+**Status:** Done
 **User Spec:** [`../../use-cases/UC-11-pypi-publish.md`](../../use-cases/UC-11-pypi-publish.md)
 **Test Spec:** [`../test/UC-11-pypi-publish.md`](../test/UC-11-pypi-publish.md)
 **Depends on:** ADR-002 v1.1, UC-08, Sprint 10 `v0.4.0`.
@@ -15,7 +15,9 @@ Make `llm-cockpit` publishable and installable from PyPI with a repeatable tag-b
 
 Target release: `v1.0.0`.
 
-Rationale: Sprint 12 is the public PyPI release. Sprint 11 must first make the UI and remaining product functionality release-quality; PyPI is the `1.0.0` gate. Current pre-1.0 hardening releases may continue as `v0.5.x` / beta tags until every acceptance criterion below passes.
+Rationale: Sprint 11 completed the UI/release hardening needed for the first
+public PyPI release. `v0.5.7` remains as a beta/history artifact; `v1.0.0` is
+the release to advertise.
 
 ## Required changes
 
@@ -27,7 +29,7 @@ Update `pyproject.toml` so packaging checks pass cleanly:
 - add `project.urls` for Homepage, Repository, Issues, Changelog, and Documentation;
 - confirm Python version classifiers match `requires-python >=3.12`;
 - confirm package data includes `frontend_dist`, migrations, and default config files;
-- use `Development Status :: 4 - Beta` until the first public `v1.0.0` release.
+- use `Development Status :: 5 - Production/Stable` for `v1.0.0`.
 
 ### Repository release files
 
@@ -79,9 +81,9 @@ Do not store PyPI API tokens in the repo.
 
 ### Current 2026-05-02 readiness snapshot
 
-Done in the pre-1.0 hardening block:
+Done in the public release block:
 
-- package metadata has SPDX-style license, public URLs, beta classifier, and `LICENSE`;
+- package metadata has SPDX-style license, public URLs, stable classifier, and `LICENSE`;
 - frontend build script uses `npm ci` when dependencies need installation;
 - CI, TestPyPI, and production tag release workflow skeletons exist;
 - GitHub Actions environments `testpypi` and `pypi` exist;
@@ -97,14 +99,14 @@ Trusted Publisher configuration to create in PyPI/TestPyPI:
 If the project does not exist yet, create a **pending publisher**. This does
 not reserve the name until the first successful publish.
 
-Still required before advertising `v1.0.0` on PyPI:
+Release evidence before advertising `v1.0.0` on PyPI:
 
-- run a clean build that refreshes `src/cockpit/frontend_dist`;
-- `python -m build` and `twine check dist/*`;
-- isolated local-wheel install smoke;
-- Neuroforge `cockpit-admin doctor` smoke;
-- TestPyPI publish from the `TestPyPI` workflow or documented trusted-publisher/account blocker;
-- Chris explicitly says "go publish PyPI".
+- clean build refreshes `src/cockpit/frontend_dist`;
+- `python -m build` and `twine check dist/*` pass in CI/release workflows;
+- isolated local-wheel install smoke passed for the hardening build;
+- Neuroforge `cockpit-admin doctor` smoke passed after PyPI install;
+- TestPyPI trusted-publisher publish passed;
+- Chris explicitly said "go publish PyPI".
 
 ### UC-08 Slice E reconcile
 

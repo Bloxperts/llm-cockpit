@@ -6,11 +6,10 @@ The cockpit assumes you already have Ollama running. It does not install, manage
 
 ## Status
 
-**v0.5.7 beta — pre-1.0 release hardening.** The core local cockpit is
-implemented and the current sprint is closing UI/release-readiness gaps before
-the first public PyPI `v1.0.0`. Do not treat the package as public-1.0 until
-the UC-11 release checklist, TestPyPI/dry-run, and Neuroforge install smoke
-have passed. See `docs/process/SPRINT_STATE.md` and `docs/specs/functional/UC-11-pypi-publish.md`.
+**v1.0.0 — public PyPI release.** The core local cockpit is implemented,
+published through PyPI trusted publishing, and smoke-tested on Neuroforge.
+See `docs/process/SPRINT_STATE.md` and
+`docs/specs/functional/UC-11-pypi-publish.md`.
 
 ## What it does
 
@@ -27,10 +26,8 @@ have passed. See `docs/process/SPRINT_STATE.md` and `docs/specs/functional/UC-11
 # 1. Have Ollama running (https://ollama.com/download)
 ollama serve   # or: systemctl --user start ollama
 
-# 2. Install the cockpit
-# Public PyPI install is gated on v1.0.0. Until then, use a local wheel
-# or a tagged GitHub install from the private/release repo.
-pipx install dist/llm_cockpit-*.whl
+# 2. Install the cockpit from PyPI
+pipx install llm-cockpit
 
 # 3. Bootstrap (probes Ollama, creates admin / ollama, sets must_change_password)
 cockpit-admin init
@@ -43,7 +40,6 @@ cockpit-admin serve
 
 Other planned shapes:
 
-- `pipx install llm-cockpit` after public PyPI `v1.0.0`.
 - `cockpit-admin systemd-install` on Linux once UC-08 Slice E is re-verified.
 
 ## Roles (ADR-004)

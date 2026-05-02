@@ -7,10 +7,10 @@
 
 ## Current sprint
 
-**Sprint 11 (open) — UI refresh + release-readiness before PyPI.**
+**Sprint 11 (open) — UI refresh + public PyPI release.**
 
 **Window:** 2026-04-30 — open.
-**Target release:** `v0.5.7` beta, with `v1.0.0` still reserved for the public PyPI sprint.
+**Target release:** `v1.0.0` public PyPI release.
 
 **Goal**
 
@@ -25,7 +25,7 @@
 | UC-12 UI refresh and interaction polish | Use Case / Functional / Test specs Accepted (2026-04-30) | Hybrid design direction: operational dashboard + premium chat/code workspace. Smooth app shell, dashboard/model cards, drag-and-drop placement board with fallback, perf-test drawer polish, admin page alignment, responsive/focus/loading/error states, browser smoke screenshots. | In Progress — Chris accepted UC-12 on 2026-04-30. |
 | Release-readiness functional sweep | Existing UC-01..UC-11 Review + UC-12 Accepted | Keep all current functionality live while the UI changes; fix release-blocking regressions or obvious functionality gaps discovered during the redesign. | In Progress — model-card/admin split, package metadata, CI/release workflow scaffolding, and frontend bundle refresh are being handled as one block. |
 
-**Out of scope:** Public PyPI publishing (`v1.0.0` / Sprint 12), GPU hard-isolation architecture, Docker image publishing, Homebrew/apt/winget packages, off-LAN TLS/reverse-proxy work, v2 backlog (external access, mobile/PWA).
+**Out of scope:** GPU hard-isolation architecture, Docker image publishing, Homebrew/apt/winget packages, off-LAN TLS/reverse-proxy work, v2 backlog (external access, mobile/PWA).
 
 ### Sprint 11 planning notes
 
@@ -65,6 +65,10 @@
   upgraded from the previous local-wheel `0.5.6` install to PyPI
   `llm-cockpit==0.5.7` with `pipx install --force`; `cockpit-admin --version`
   reports `0.5.7` and `doctor` is green against local Ollama and data dir.
+- 2026-05-02: Release version corrected to `v1.0.0` after Chris pointed out
+  that the approved public PyPI publish should carry the `1.0.0` version. The
+  earlier `v0.5.7` remains as a published beta/history artifact; `v1.0.0` is
+  the public release line to advertise.
 
 ---
 
@@ -72,6 +76,8 @@
 
 | Tag | Date | Sprint | What shipped |
 |---|---|---|---|
+| `v1.0.0` | 2026-05-02 | 11 | Public PyPI release of the release-readiness model-management pass. |
+| `v0.5.7` | 2026-05-02 | 11 | Beta/history artifact for the release-readiness model-management pass, published before the final public version correction to `v1.0.0`. |
 | `v0.4.0` | 2026-04-29 | 10 | UC-02 v1.1 perf-test progress UI: SSE progress/heartbeat/cancel/error protocol, cancel route, progress drawer with live tokens/s and stalled detection. BUG-GPU1 diagnose-only LL-001 accepted: single-daemon Ollama placement is best-effort on Neuroforge. PR #17 → `0e012d6`. |
 | `v0.3.1` | 2026-04-28 | 9 | UC-10 admin Ollama config page (`/admin/ollama` four panels: tags, defaults, metrics, audit log + CSV export). 431 tests green. PR #16 → 210c2f4. |
 | `v0.3.0` | 2026-04-28 | 8 | UC-03 dashboard history (`/dashboard` Live/History tabs, 24h/7d, 4 chart cards). Migration `0005_history.py`. Aggregators every 60 s / 3600 s. Recharts dep. PR #15 → 5ba134f. |
