@@ -1093,6 +1093,27 @@ function fmtSeconds(value: number | null | undefined) {
   return value == null ? "—" : `${value.toFixed(1)}s`;
 }
 
+function fmtMb(value: number | null | undefined) {
+  if (value == null) return "?";
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} GB`;
+  return `${Math.round(value)} MB`;
+}
+
+function formatExpiresAt(value: string | null | undefined) {
+  if (!value) return "permanent";
+  const expires = new Date(value);
+  if (Number.isNaN(expires.getTime())) return "unknown";
+  const now = Date.now();
+  if (expires.getFullYear() >= 2100) return "permanent";
+  const remainingMs = expires.getTime() - now;
+  if (remainingMs <= 0) return "now";
+  const remainingMinutes = Math.round(remainingMs / 60000);
+  if (remainingMinutes < 90) return `${remainingMinutes} min`;
+  const remainingHours = remainingMs / 3600000;
+  if (remainingHours < 48) return `${remainingHours.toFixed(1)} h`;
+  return expires.toLocaleString();
+}
+
 function ageLabel(days: number | null | undefined) {
   if (days == null) return "age unknown";
   if (days < 1) return "today";
@@ -1387,16 +1408,26 @@ function ModelCardView({
   const measuredCtx = m.context?.max_measured_ctx ?? m.metrics?.max_ctx_observed ?? null;
   const ctxWarning = Boolean(safeCtx && configuredCtx && configuredCtx > safeCtx);
   const metadataBits = [m.metadata?.parameter_size, m.metadata?.quantization_level].filter(Boolean);
+  const requestedWarm = isWarmColumn(placement);
   const actualLabel =
     m.actual.gpu_layout && Object.keys(m.actual.gpu_layout).length
       ? Object.entries(m.actual.gpu_layout)
           .map(([gpu, mb]) => `${gpu}:${Math.round(mb / 1024)}GB`)
           .join(" ")
-      : m.actual.main_gpu_actual != null
+      : m.actual.loaded && m.actual.vram_mb != null
+        ? `in VRAM ${fmtMb(m.actual.vram_mb)}`
+        : m.actual.main_gpu_actual != null
         ? `GPU ${m.actual.main_gpu_actual}`
         : m.actual.loaded
-          ? "loaded"
-          : "idle";
+          ? "in VRAM"
+          : requestedWarm
+            ? "not in VRAM"
+            : "idle";
+  const residencyDetail = m.actual.loaded
+    ? `Loaded until ${formatExpiresAt(m.actual.expires_at)}`
+    : requestedWarm
+      ? "Requested warm, but Ollama is not keeping it loaded."
+      : "Loads on first request.";
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: m.name,
     disabled: !isAdmin || busy,
@@ -1463,6 +1494,9 @@ function ModelCardView({
           Requested {placement} · Ollama placed on GPU {m.actual.main_gpu_actual}
         </div>
       ) : null}
+      <div className={`mt-1 text-xs ${m.actual.loaded ? "text-emerald-700 dark:text-emerald-300" : requestedWarm ? "text-amber-700 dark:text-amber-300" : "text-neutral-500 dark:text-neutral-400"}`}>
+        {residencyDetail}
+      </div>
       {ctxWarning ? (
         <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
           Configured ctx exceeds safe estimate.

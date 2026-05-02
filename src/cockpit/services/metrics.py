@@ -817,6 +817,7 @@ def _build_model_card(
     actual = {
         "loaded": bool(loaded_info),
         "vram_mb": (loaded_info or {}).get("vram_mb"),
+        "expires_at": (loaded_info or {}).get("until"),
         "main_gpu_actual": None,  # set by placement-transition handler when known
         "gpu_layout": None,
         "mismatch": False,

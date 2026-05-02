@@ -24,6 +24,7 @@ export interface ModelConfigPayload {
 export interface ModelActualPayload {
   loaded: boolean;
   vram_mb: number | null;
+  expires_at: string | null;
   main_gpu_actual: number | null;
   gpu_layout: Record<string, number> | null;
   mismatch: boolean;
