@@ -212,15 +212,22 @@ function ModelTagsPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    api<DashboardSnapshot>("/api/dashboard/snapshot")
-      .then((s) => {
-        if (!cancelled) setSnapshot(s);
-      })
-      .catch((e) => {
+    const refreshSnapshot = async () => {
+      try {
+        const s = await api<DashboardSnapshot>("/api/dashboard/snapshot");
+        if (!cancelled) {
+          setSnapshot(s);
+          setError(null);
+        }
+      } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? `Failed: ${e.status}` : "Failed");
-      });
+      }
+    };
+    void refreshSnapshot();
+    const id = window.setInterval(() => void refreshSnapshot(), 5000);
     return () => {
       cancelled = true;
+      window.clearInterval(id);
     };
   }, []);
 
@@ -362,14 +369,28 @@ function ModelTagsPanel() {
     if (!snapshot || perfRun?.status === "running") return;
     const models = sortedModels(snapshot.models, sort);
     let completedDurations: number[] = [];
+    let lastError: string | null = null;
     for (let i = 0; i < models.length; i += 1) {
       setPerfRun((prev) => (prev ? { ...prev, completedDurations } : prev));
       try {
         const duration = await runPerfTest(models[i].name, "all", i, models.length);
         completedDurations = [...completedDurations, duration];
-      } catch {
-        break;
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : "Perf test failed";
       }
+    }
+    if (lastError) {
+      setPerfRun((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "error",
+              stage: "complete with errors",
+              completedDurations,
+              error: lastError,
+            }
+          : prev,
+      );
     }
   }
 

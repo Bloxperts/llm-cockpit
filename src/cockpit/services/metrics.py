@@ -34,7 +34,15 @@ from sqlalchemy import func as sqlfunc
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from cockpit.models import Message, MetricsSnapshot, ModelConfig, ModelMetadata, ModelPerf, ModelTag
+from cockpit.models import (
+    Conversation,
+    Message,
+    MetricsSnapshot,
+    ModelConfig,
+    ModelMetadata,
+    ModelPerf,
+    ModelTag,
+)
 from cockpit.ports.llm_chat import (
     LLMChat,
     LoadedModel,
@@ -890,16 +898,18 @@ def assemble_dashboard_snapshot(
                 select(ModelMetadata).where(ModelMetadata.model.in_(model_names))
             ).scalars()
         }
+        call_model = sqlfunc.coalesce(Message.model, Conversation.model).label("call_model")
         calls_30d = {
-            row.model: int(row.calls)
+            row.call_model: int(row.calls)
             for row in session.execute(
-                select(Message.model, sqlfunc.count(Message.id).label("calls"))
+                select(call_model, sqlfunc.count(Message.id).label("calls"))
+                .join(Conversation, Conversation.id == Message.conversation_id)
                 .where(
-                    Message.role == "assistant",
-                    Message.model.in_(model_names),
+                    Message.role == "user",
+                    call_model.in_(model_names),
                     Message.ts >= db_cutoff_30d,
                 )
-                .group_by(Message.model)
+                .group_by(call_model)
             )
         }
     else:

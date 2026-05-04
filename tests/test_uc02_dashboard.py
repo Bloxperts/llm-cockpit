@@ -285,7 +285,15 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
         session.flush()
         session.add_all(
             [
+                Message(conversation_id=conv.id, role="user", content="new prompt", model="gemma3:27b"),
                 Message(conversation_id=conv.id, role="assistant", content="new", model="gemma3:27b"),
+                Message(
+                    conversation_id=conv.id,
+                    role="user",
+                    content="old prompt",
+                    model="gemma3:27b",
+                    ts=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=31),
+                ),
                 Message(
                     conversation_id=conv.id,
                     role="assistant",
@@ -311,6 +319,37 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
     assert card.actual.loaded is True
     assert card.metadata.release_date_label is not None
     assert card.context.estimate_confidence in {"unknown", "estimated", "measured"}
+
+
+def test_assemble_dashboard_snapshot_counts_submitted_user_turns(
+    session_factory: sessionmaker,
+) -> None:
+    """The model-card KPI is attempted calls, not only completed assistant rows."""
+    g = GpuSamplerState(last_snapshots=[gpu_snapshot(0)], last_success_at=1.0)
+    m = ModelStateSamplerState(
+        available_models=[model_info("gemma4:26b")],
+        last_success_at=1.0,
+    )
+    with session_factory() as session:
+        user = User(username="u", pw_hash="x", role="chat")
+        session.add(user)
+        session.flush()
+        conv = Conversation(user_id=user.id, mode="chat", model="gemma4:26b")
+        session.add(conv)
+        session.flush()
+        session.add_all(
+            [
+                Message(conversation_id=conv.id, role="user", content="one", model="gemma4:26b"),
+                Message(conversation_id=conv.id, role="user", content="two", model=None),
+                Message(conversation_id=conv.id, role="assistant", content="ok", model="gemma4:26b"),
+            ]
+        )
+        session.commit()
+
+        payload = assemble_dashboard_snapshot(session=session, gpu_state=g, model_state=m, now=2.0)
+
+    card = DashboardSnapshot.model_validate(payload).models[0]
+    assert card.calls_30d == 2
 
 
 def test_write_admin_audit_inserts_row(session_factory: sessionmaker) -> None:

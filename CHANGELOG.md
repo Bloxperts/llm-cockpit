@@ -3,6 +3,20 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v1.0.1] — 2026-05-04 — Model KPI and perf-test patch
+
+Patch release for the admin model-management surface.
+
+### Fixed
+
+- Model-card `calls_30d` now counts submitted cockpit user turns in the last
+  30 days, with a fallback from `messages.model` to `conversations.model` for
+  older rows.
+- `/admin/ollama` refreshes the model snapshot while open so KPI changes are
+  visible without a manual reload.
+- Sequential "Test all models" continues after one model fails, so later
+  models still get attempted and can receive performance rows.
+
 ## [v1.0.0] — 2026-05-02 — Public PyPI release
 
 First public PyPI release of LLM Cockpit.
