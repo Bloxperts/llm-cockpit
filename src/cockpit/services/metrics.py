@@ -625,6 +625,7 @@ def _serialize_perf(
         "max_ctx_observed": row.max_ctx_observed,
         "benchmark_profile": _perf_profile(row),
         "placement_tested": row.placement_tested,
+        "call_count": row.call_count,
         "gpu_layout_diff": json.loads(row.gpu_layout_json) if row.gpu_layout_json else {},
         "notes": row.notes,
         "recommendations": [],
@@ -912,6 +913,19 @@ def assemble_dashboard_snapshot(
                 .group_by(call_model)
             )
         }
+        perf_calls_30d = {
+            row.model: int(row.calls)
+            for row in session.execute(
+                select(ModelPerf.model, sqlfunc.sum(ModelPerf.call_count).label("calls"))
+                .where(
+                    ModelPerf.model.in_(model_names),
+                    ModelPerf.measured_at >= db_cutoff_30d,
+                )
+                .group_by(ModelPerf.model)
+            )
+        }
+        for model, count in perf_calls_30d.items():
+            calls_30d[model] = calls_30d.get(model, 0) + count
     else:
         configs = {}
         tags = {}

@@ -324,7 +324,7 @@ def test_assemble_dashboard_snapshot_validates_against_schema(
 def test_assemble_dashboard_snapshot_counts_submitted_user_turns(
     session_factory: sessionmaker,
 ) -> None:
-    """The model-card KPI is attempted calls, not only completed assistant rows."""
+    """The model-card KPI is attempted chat calls, not only completed assistant rows."""
     g = GpuSamplerState(last_snapshots=[gpu_snapshot(0)], last_success_at=1.0)
     m = ModelStateSamplerState(
         available_models=[model_info("gemma4:26b")],
@@ -350,6 +350,41 @@ def test_assemble_dashboard_snapshot_counts_submitted_user_turns(
 
     card = DashboardSnapshot.model_validate(payload).models[0]
     assert card.calls_30d == 2
+
+
+def test_assemble_dashboard_snapshot_counts_perf_harness_calls(
+    session_factory: sessionmaker,
+) -> None:
+    """Performance-harness Ollama calls contribute to the model-card KPI."""
+    g = GpuSamplerState(last_snapshots=[gpu_snapshot(0)], last_success_at=1.0)
+    m = ModelStateSamplerState(
+        available_models=[model_info("gemma4:26b")],
+        last_success_at=1.0,
+    )
+    with session_factory() as session:
+        user = User(username="u", pw_hash="x", role="chat")
+        session.add(user)
+        session.flush()
+        conv = Conversation(user_id=user.id, mode="chat", model="gemma4:26b")
+        session.add(conv)
+        session.flush()
+        session.add(Message(conversation_id=conv.id, role="user", content="hi", model="gemma4:26b"))
+        session.add(
+            ModelPerf(
+                model="gemma4:26b",
+                cold_load_seconds=3.0,
+                warm_load_seconds=0.2,
+                throughput_tps=120.0,
+                max_ctx_observed=65536,
+                call_count=8,
+            )
+        )
+        session.commit()
+
+        payload = assemble_dashboard_snapshot(session=session, gpu_state=g, model_state=m, now=2.0)
+
+    card = DashboardSnapshot.model_validate(payload).models[0]
+    assert card.calls_30d == 9
 
 
 def test_write_admin_audit_inserts_row(session_factory: sessionmaker) -> None:
@@ -1091,6 +1126,7 @@ def test_perf_test_emits_stage_sequence_and_writes_perf_row(settings: Settings, 
             assert row.cold_load_seconds is not None
             assert row.warm_load_seconds is not None
             assert row.throughput_tps is not None
+            assert row.call_count == 7
             assert row.benchmark_profile in {"gpu0", "gpu1", "multi_gpu", "on_demand"}
             audits = list(
                 session.execute(select(AdminAudit).where(AdminAudit.action == "model_perf_test")).scalars()

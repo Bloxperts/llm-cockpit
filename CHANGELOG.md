@@ -3,6 +3,17 @@
 All notable changes to **llm-cockpit** are documented here. The project
 follows SemVer once it reaches v0.1.0; pre-release alphas use `v0.X.Yaβ`.
 
+## [v1.0.2] — 2026-05-05 — Perf harness call KPI patch
+
+Patch release for the admin model-management KPI.
+
+### Fixed
+
+- Model-card `calls_30d` now includes performance-harness Ollama generation
+  calls, with a migration backfill for existing `model_perf` rows.
+- Future perf profiles record their exact generation call count, so the KPI
+  moves when "Test all models" runs.
+
 ## [v1.0.1] — 2026-05-04 — Model KPI and perf-test patch
 
 Patch release for the admin model-management surface.

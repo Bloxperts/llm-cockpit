@@ -153,6 +153,7 @@ class ModelPerf(Base):
     first_token_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     throughput_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_ctx_observed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     gpu_layout_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     benchmark_profile: Mapped[str | None] = mapped_column(String, nullable=True)
     placement_tested: Mapped[str | None] = mapped_column(String, nullable=True)

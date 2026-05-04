@@ -105,6 +105,39 @@ class _PerfRunState:
         return int((time.monotonic() - self.started_at) * 1000)
 
 
+class _CountingLLMChat:
+    """Tiny perf-harness wrapper that counts outbound generation calls."""
+
+    def __init__(self, inner: LLMChat):
+        self.inner = inner
+        self.call_count = 0
+
+    async def list_models(self):
+        return await self.inner.list_models()
+
+    async def show_model(self, model: str):
+        return await self.inner.show_model(model)
+
+    async def loaded(self):
+        return await self.inner.loaded()
+
+    def chat_stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        options: dict[str, Any] | None = None,
+    ):
+        self.call_count += 1
+        return self.inner.chat_stream(model=model, messages=messages, options=options)
+
+    def pull_model(self, model: str):
+        return self.inner.pull_model(model)
+
+    async def delete_model(self, model: str) -> None:
+        await self.inner.delete_model(model)
+
+
 def _installed_catalog_names(request: Request) -> set[str]:
     state = getattr(request.app.state, "model_state", None)
     installed: set[str] = set()
@@ -944,6 +977,7 @@ def _save_model_perf(
     gpu_count_at_test: int | None = None,
     num_ctx_used: int | None = None,
     keep_alive_used: str | None = None,
+    call_count: int = 0,
     notes: str | None = None,
 ) -> ModelPerf:
     row = ModelPerf(
@@ -958,6 +992,7 @@ def _save_model_perf(
         gpu_count_at_test=gpu_count_at_test,
         num_ctx_used=num_ctx_used,
         keep_alive_used=keep_alive_used,
+        call_count=call_count,
         notes=notes,
     )
     session.add(row)
@@ -991,6 +1026,7 @@ def _last_perf_row(session: Session, model: str) -> dict[str, Any] | None:
         "gpu_count_at_test": row.gpu_count_at_test,
         "num_ctx_used": row.num_ctx_used,
         "keep_alive_used": row.keep_alive_used,
+        "call_count": row.call_count,
         "gpu_layout_diff": json.loads(row.gpu_layout_json) if row.gpu_layout_json else {},
         "notes": row.notes,
         "recommendations": [],
@@ -1325,8 +1361,6 @@ async def perf_test(
         with session_factory() as s:
             cfg = s.query(ModelConfig).filter_by(model=model).first()
             prior_placement = cfg.placement if cfg is not None else None
-            prior_keep_alive_mode = cfg.keep_alive_mode if cfg is not None else "default"
-            prior_keep_alive_seconds = cfg.keep_alive_seconds if cfg is not None else None
             prior_num_ctx = cfg.num_ctx_default if cfg is not None else None
 
         try:
@@ -1342,11 +1376,13 @@ async def perf_test(
                 async for event in _acquire_lock_with_events(model_locks[model], run_state):
                     yield event
                 model_lock_acquired = True
-                async with _AdapterScope(lambda: chat_factory(settings.ollama_url)) as chat:
+                async with _AdapterScope(lambda: chat_factory(settings.ollama_url)) as base_chat:
+                    chat = _CountingLLMChat(base_chat)
                     async with _AdapterScope(telemetry_factory) as telemetry:
                         result_rows: list[dict[str, Any]] = []
                         for profile in profiles:
                             current_profile = profile
+                            profile_call_start = chat.call_count
                             profile_options = _profile_options(profile)
                             yield _sse(
                                 "profile",
@@ -1455,6 +1491,7 @@ async def perf_test(
                             async for event in _emit_stage(run_state, "persist"):
                                 yield event
                             with session_factory() as s:
+                                profile_call_count = chat.call_count - profile_call_start
                                 row = _save_model_perf(
                                     s,
                                     model=model,
@@ -1468,6 +1505,7 @@ async def perf_test(
                                     gpu_count_at_test=gpu_count,
                                     num_ctx_used=prior_num_ctx,
                                     keep_alive_used=str(profile_options.get("keep_alive")),
+                                    call_count=profile_call_count,
                                 )
                                 serialized = _last_perf_row(s, model) or {}
                                 serialized["profile_options"] = profile_options
@@ -1484,6 +1522,7 @@ async def perf_test(
                                         "throughput_tps": mean_tps,
                                         "max_ctx_observed": max_ctx,
                                         "benchmark_profile": profile,
+                                        "call_count": profile_call_count,
                                     },
                                     source_ip=source_ip,
                                 )
@@ -1543,6 +1582,7 @@ async def perf_test(
                     placement_tested=current_profile,
                     gpu_count_at_test=gpu_count,
                     num_ctx_used=prior_num_ctx,
+                    call_count=1,
                     notes="profile failed: model_not_found",
                 )
                 s.commit()
@@ -1561,6 +1601,7 @@ async def perf_test(
                     placement_tested=current_profile,
                     gpu_count_at_test=gpu_count,
                     num_ctx_used=prior_num_ctx,
+                    call_count=1,
                     notes=f"profile failed: ollama_unreachable: {exc}",
                 )
                 s.commit()
@@ -1582,6 +1623,7 @@ async def perf_test(
                     placement_tested=current_profile,
                     gpu_count_at_test=gpu_count,
                     num_ctx_used=prior_num_ctx,
+                    call_count=1,
                     notes=f"profile failed: model_not_supported: {exc}",
                 )
                 s.commit()
@@ -1604,6 +1646,7 @@ async def perf_test(
                     placement_tested=current_profile,
                     gpu_count_at_test=gpu_count,
                     num_ctx_used=prior_num_ctx,
+                    call_count=1,
                     notes=f"profile failed: {exc}",
                 )
                 s.commit()

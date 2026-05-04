@@ -139,6 +139,7 @@ class ModelMetricsPayload(BaseModel):
     max_ctx_observed: int | None
     benchmark_profile: str | None = None
     placement_tested: str | None = None
+    call_count: int = 0
     gpu_layout_diff: dict[str, int] = Field(default_factory=dict)
     notes: str | None = None
     recommendations: list[RecommendationPayload] = Field(default_factory=list)
