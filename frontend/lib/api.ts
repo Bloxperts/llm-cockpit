@@ -46,6 +46,53 @@ export async function api<T = unknown>(
   return body as T;
 }
 
+export type ConductorOverview = {
+  reachable: boolean;
+  surface: string;
+  updated_at: string;
+  error?: string;
+  source?: {
+    ssh_host: string;
+    manifest_path?: string;
+    context_report_path?: string;
+  };
+  manifest_count?: number;
+  latest_manifest?: Record<string, unknown> | null;
+  overview?: {
+    call_count: number;
+    failure_count: number;
+    cache_hit_count: number;
+    cache_hit_rate: number;
+    fallback_count: number;
+    prompt_budget_exceeded_rate: number;
+    manifest_coverage_percent: number;
+    total_cost_usd: number;
+    total_tokens_in: number;
+    total_tokens_out: number;
+    tokens_by_tier: Record<string, { tokens_in: number; tokens_out: number }>;
+    spend_by_adapter: Record<string, number>;
+    spend_by_node: Record<string, number>;
+    fallback_events: Record<string, unknown>[];
+    retrieval_mode_mix: Record<string, number>;
+  };
+};
+
+export type ConductorContextReport = {
+  reachable: boolean;
+  surface: string;
+  updated_at: string;
+  error?: string;
+  report?: Record<string, unknown>;
+};
+
+export async function getConductorOverview(): Promise<ConductorOverview> {
+  return api<ConductorOverview>("/api/conductor/overview");
+}
+
+export async function getConductorContextReport(): Promise<ConductorContextReport> {
+  return api<ConductorContextReport>("/api/conductor/context-report");
+}
+
 // SSE streaming via fetch + ReadableStream. EventSource doesn't support POST,
 // so we roll our own minimal parser. Yields { event, data } per SSE block.
 export async function* streamSse(
