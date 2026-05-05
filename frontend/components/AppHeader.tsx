@@ -88,6 +88,7 @@ export function AppHeader() {
 
   const links: Array<{ href: string; label: string; show: boolean }> = [
     { href: "/dashboard/", label: "Dashboard", show: true },
+    { href: "/conductor/", label: "Conductor", show: me.role === "admin" },
     { href: "/chat/", label: "Chat", show: hasAtLeast(me.role, "chat") },
     { href: "/admin/users/", label: "Users", show: me.role === "admin" },
     { href: "/admin/ollama/", label: "Ollama", show: me.role === "admin" },

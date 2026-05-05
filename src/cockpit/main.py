@@ -42,6 +42,7 @@ from cockpit.routers import auth as auth_router
 from cockpit.routers import chat as chat_router
 from cockpit.routers import code as code_router
 from cockpit.routers import code_files as code_files_router
+from cockpit.routers import conductor as conductor_router
 from cockpit.routers import dashboard as dashboard_router
 from cockpit.routers import dashboard_history as dashboard_history_router
 from cockpit.schemas import AppVersionResponse
@@ -227,6 +228,7 @@ def create_app(
 
     app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
     app.include_router(dashboard_router.router, prefix="/api/dashboard", tags=["dashboard"])
+    app.include_router(conductor_router.router, prefix="/api/conductor", tags=["conductor"])
     # UC-03 — dashboard history charts share the /api/dashboard prefix.
     app.include_router(
         dashboard_history_router.router,

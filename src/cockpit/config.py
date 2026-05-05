@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     # in config.toml.
     code_files_dir: Path | None = None
 
+    # Conductor shadow dashboard. Read-only and degraded by default rather
+    # than blocking the cockpit when Cortex-side shadow files are absent.
+    conductor_enabled: bool = True
+    conductor_ssh_host: str = "bloxperts@cortex"
+    conductor_manifest_path: str = "/var/lib/agentic-blox/conductor/manifests.jsonl"
+    conductor_context_report_path: str = "/var/lib/agentic-blox/conductor/context-report.json"
+    conductor_ssh_timeout_seconds: int = 5
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / self.db_file
@@ -138,6 +146,17 @@ class Settings(BaseSettings):
                 kwargs["log_file"] = paths["log_file"]
             if paths.get("code_files_dir"):
                 kwargs["code_files_dir"] = Path(paths["code_files_dir"])
+        if "conductor" in data:
+            conductor = data["conductor"]
+            for key in (
+                "enabled",
+                "ssh_host",
+                "manifest_path",
+                "context_report_path",
+                "ssh_timeout_seconds",
+            ):
+                if key in conductor:
+                    kwargs[f"conductor_{key}"] = conductor[key]
         return cls(**kwargs)
 
 
