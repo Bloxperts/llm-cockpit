@@ -6,8 +6,10 @@ import { useEffect, useState } from "react";
 import { AppHeader } from "@/components/AppHeader";
 import {
   type ConductorContextReport,
+  type ConductorManifestDetail,
   type ConductorOverview,
   getConductorContextReport,
+  getConductorManifestDetail,
   getConductorOverview,
 } from "@/lib/api";
 
@@ -29,6 +31,8 @@ export default function ConductorPage() {
   const [contextReport, setContextReport] = useState<ConductorContextReport>(
     emptyContextReport("loading"),
   );
+  const [selectedManifestId, setSelectedManifestId] = useState<string | null>(null);
+  const [manifestDetail, setManifestDetail] = useState<ConductorManifestDetail | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +65,8 @@ export default function ConductorPage() {
 
   const stats = overview.overview;
   const latest = overview.latest_manifest ?? null;
+  const recentManifests = overview.recent_manifests ?? [];
+  const activeManifestId = selectedManifestId ?? stringValue(latest?.id) ?? null;
   const report = contextReport.report ?? {};
   const contextSummary = summarizeContext(report);
   const metrics: Metric[] = [
@@ -90,6 +96,31 @@ export default function ConductorPage() {
     ["Tokens out", latest?.tokens_out],
     ["Cost", usdNumber(latest?.cost_usd)],
   ];
+
+  useEffect(() => {
+    if (!activeManifestId) {
+      setManifestDetail(null);
+      return;
+    }
+    let cancelled = false;
+    getConductorManifestDetail(activeManifestId)
+      .then((detail) => {
+        if (!cancelled) setManifestDetail(detail);
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setManifestDetail({
+            reachable: false,
+            surface: "blox-cockpit.conductor",
+            updated_at: new Date().toISOString(),
+            error: error.message,
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeManifestId]);
 
   return (
     <>
@@ -177,6 +208,52 @@ export default function ConductorPage() {
               </div>
             ))}
           </dl>
+        </div>
+      </section>
+
+      <section className="mt-6 grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+        <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <SectionHeader title="Manifest Drilldown" subtitle="Recent ADR-012 records" />
+          <div className="divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+            {recentManifests.length ? (
+              recentManifests.map((item) => {
+                const id = stringValue(item.id);
+                const active = id === activeManifestId;
+                return (
+                  <button
+                    key={id ?? JSON.stringify(item)}
+                    type="button"
+                    onClick={() => id && setSelectedManifestId(id)}
+                    className={[
+                      "block w-full px-4 py-3 text-left text-sm",
+                      active
+                        ? "bg-slate-100 dark:bg-slate-800"
+                        : "hover:bg-slate-50 dark:hover:bg-slate-800/70",
+                    ].join(" ")}
+                  >
+                    <span className="block truncate font-medium">{display(id)}</span>
+                    <span className="mt-1 block text-xs text-slate-500">
+                      {display(item.capability)} · {display(item.tier)} · {display(item.status)}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="p-4 text-sm text-slate-500">No manifest rows yet.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <SectionHeader
+            title="Full Record"
+            subtitle={manifestDetail?.reachable ? display(activeManifestId) : manifestDetail?.error ?? "Select a manifest"}
+          />
+          <pre className="max-h-[34rem] overflow-auto border-t border-slate-200 p-4 text-xs leading-5 dark:border-slate-800">
+            {manifestDetail?.manifest
+              ? JSON.stringify(manifestDetail.manifest, null, 2)
+              : manifestDetail?.error ?? "No manifest selected."}
+          </pre>
         </div>
       </section>
 
@@ -487,4 +564,8 @@ function usd(value?: number) {
 
 function usdNumber(value: unknown) {
   return typeof value === "number" ? usd(value) : "—";
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value ? value : null;
 }

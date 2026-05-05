@@ -43,6 +43,7 @@ class ConductorSnapshot:
             "updated_at": datetime.now(UTC).isoformat(),
             "manifest_count": len(manifests),
             "latest_manifest": _latest_manifest_summary(manifests),
+            "recent_manifests": [_manifest_list_item(item) for item in manifests[-20:]][::-1],
             "overview": _overview_from_manifests(manifests),
         }
 
@@ -61,6 +62,21 @@ class ConductorSnapshot:
             "updated_at": datetime.now(UTC).isoformat(),
             "report": report,
         }
+
+    def manifest_detail(self, manifest_id: str) -> dict[str, Any]:
+        for item in self._read_manifests():
+            if item.get("id") == manifest_id:
+                return {
+                    "reachable": True,
+                    "surface": self.surface_name,
+                    "source": {
+                        "ssh_host": self.paths.ssh_host,
+                        "manifest_path": self.paths.manifest_path,
+                    },
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "manifest": item,
+                }
+        raise ConductorReadError(f"manifest_not_found:{manifest_id}")
 
     def _read_manifests(self) -> tuple[dict[str, Any], ...]:
         raw = self._ssh_cat(self.paths.manifest_path)
@@ -131,6 +147,10 @@ def _latest_manifest_summary(manifests: tuple[dict[str, Any], ...]) -> dict[str,
     if not manifests:
         return None
     item = manifests[-1]
+    return _manifest_list_item(item)
+
+
+def _manifest_list_item(item: dict[str, Any]) -> dict[str, Any]:
     realised = _realised(item)
     routing = item.get("extras", {}).get("routing", {})
     return {

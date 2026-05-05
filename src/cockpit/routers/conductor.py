@@ -41,6 +41,20 @@ async def context_report(
         return degraded_response(exc)
 
 
+@router.get("/manifests/{manifest_id}")
+async def manifest_detail(
+    manifest_id: str,
+    settings: Settings = SETTINGS_DEPENDENCY,
+    _user: User = ADMIN_DEPENDENCY,
+) -> dict:
+    if not settings.conductor_enabled:
+        return degraded_response(RuntimeError("conductor_dashboard_disabled"))
+    try:
+        return _snapshot(settings).manifest_detail(manifest_id)
+    except Exception as exc:  # noqa: BLE001 - endpoint must degrade instead of breaking cockpit.
+        return degraded_response(exc)
+
+
 def _snapshot(settings: Settings) -> ConductorSnapshot:
     return ConductorSnapshot(
         ConductorPaths(

@@ -39,6 +39,27 @@ def test_overview_aggregates_remote_manifest(monkeypatch: pytest.MonkeyPatch):
     assert data["overview"]["retrieval_mode_mix"]["agentic"] == 1
     assert data["latest_manifest"]["id"] == "man_2"
     assert data["latest_manifest"]["node"] == "cortex"
+    assert [item["id"] for item in data["recent_manifests"]] == ["man_2", "man_1"]
+
+
+def test_manifest_detail_returns_full_record(monkeypatch: pytest.MonkeyPatch):
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=MANIFEST_JSONL, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    snapshot = ConductorSnapshot(
+        ConductorPaths(
+            ssh_host="bloxperts@cortex",
+            manifest_path="/var/lib/agentic-blox/conductor/manifests.jsonl",
+            context_report_path="/var/lib/agentic-blox/conductor/report.json",
+        )
+    )
+    data = snapshot.manifest_detail("man_1")
+
+    assert data["reachable"] is True
+    assert data["manifest"]["id"] == "man_1"
+    assert data["manifest"]["realised"]["retrieval"]["mode"] == "classic"
 
 
 def test_ssh_failure_is_explicit(monkeypatch: pytest.MonkeyPatch):

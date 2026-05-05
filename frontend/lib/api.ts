@@ -75,6 +75,7 @@ export type ConductorOverview = {
     fallback_events: Record<string, unknown>[];
     retrieval_mode_mix: Record<string, number>;
   };
+  recent_manifests?: Record<string, unknown>[];
 };
 
 export type ConductorContextReport = {
@@ -91,6 +92,20 @@ export async function getConductorOverview(): Promise<ConductorOverview> {
 
 export async function getConductorContextReport(): Promise<ConductorContextReport> {
   return api<ConductorContextReport>("/api/conductor/context-report");
+}
+
+export type ConductorManifestDetail = {
+  reachable: boolean;
+  surface: string;
+  updated_at: string;
+  error?: string;
+  manifest?: Record<string, unknown>;
+};
+
+export async function getConductorManifestDetail(
+  manifestId: string,
+): Promise<ConductorManifestDetail> {
+  return api<ConductorManifestDetail>(`/api/conductor/manifests/${encodeURIComponent(manifestId)}`);
 }
 
 // SSE streaming via fetch + ReadableStream. EventSource doesn't support POST,
