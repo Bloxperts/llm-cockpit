@@ -26,6 +26,8 @@ type CompressionRow = {
   ratio: unknown;
 };
 
+type RetrievalQuality = NonNullable<ConductorContextReport["quality"]>;
+
 export default function ConductorPage() {
   const [overview, setOverview] = useState<ConductorOverview>(emptyOverview("loading"));
   const [contextReport, setContextReport] = useState<ConductorContextReport>(
@@ -67,7 +69,9 @@ export default function ConductorPage() {
   const latest = overview.latest_manifest ?? null;
   const recentManifests = overview.recent_manifests ?? [];
   const activeManifestId = selectedManifestId ?? stringValue(latest?.id) ?? null;
+  const visibleManifestDetail = activeManifestId ? manifestDetail : null;
   const report = contextReport.report ?? {};
+  const quality = contextReport.quality ?? summarizeRetrieval(report);
   const contextSummary = summarizeContext(report);
   const metrics: Metric[] = [
     { label: "Calls", value: stats?.call_count ?? "—", detail: "shadow manifests" },
@@ -99,7 +103,6 @@ export default function ConductorPage() {
 
   useEffect(() => {
     if (!activeManifestId) {
-      setManifestDetail(null);
       return;
     }
     let cancelled = false;
@@ -163,7 +166,7 @@ export default function ConductorPage() {
 
       <section className="mt-6 grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-          <SectionHeader title="Context Before And After" subtitle="Safe synthetic shadow example" />
+          <SectionHeader title="Context Build" subtitle="Token totals, compression, and graph retrieval quality" />
           <div className="grid gap-4 border-t border-slate-200 p-4 dark:border-slate-800 md:grid-cols-4">
             <ContextMetric
               label="Compressible raw"
@@ -195,7 +198,8 @@ export default function ConductorPage() {
             structure.
           </div>
           <CompressionTable report={report} />
-          <PromptPreview report={report} />
+          <ContextZonesTable report={report} />
+          <ContextQualityPanel quality={quality} />
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
@@ -247,12 +251,12 @@ export default function ConductorPage() {
         <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <SectionHeader
             title="Full Record"
-            subtitle={manifestDetail?.reachable ? display(activeManifestId) : manifestDetail?.error ?? "Select a manifest"}
+            subtitle={visibleManifestDetail?.reachable ? display(activeManifestId) : visibleManifestDetail?.error ?? "Select a manifest"}
           />
           <pre className="max-h-[34rem] overflow-auto border-t border-slate-200 p-4 text-xs leading-5 dark:border-slate-800">
-            {manifestDetail?.manifest
-              ? JSON.stringify(manifestDetail.manifest, null, 2)
-              : manifestDetail?.error ?? "No manifest selected."}
+            {visibleManifestDetail?.manifest
+              ? JSON.stringify(visibleManifestDetail.manifest, null, 2)
+              : visibleManifestDetail?.error ?? "No manifest selected."}
           </pre>
         </div>
       </section>
@@ -364,19 +368,112 @@ function CompressionTable({ report }: { report: Record<string, unknown> }) {
   );
 }
 
-function PromptPreview({ report }: { report: Record<string, unknown> }) {
-  const preview = pick(report, [
-    "prompt_preview",
-    "preview",
-    "prompt",
-    "context_after_build.prompt_preview",
-  ]);
+function ContextZonesTable({ report }: { report: Record<string, unknown> }) {
+  const zones = normalizeZones(report);
   return (
     <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-      <h3 className="mb-2 text-sm font-semibold">Prompt Preview</h3>
-      <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-        {typeof preview === "string" ? preview : "No prompt preview reported."}
-      </pre>
+      <h3 className="mb-2 text-sm font-semibold">Context Zones</h3>
+      <table className="w-full text-left text-sm">
+        <thead className="text-xs uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="py-2">Zone</th>
+            <th className="py-2 text-right">Tokens</th>
+            <th className="py-2 text-right">Items</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+          {zones.length ? (
+            zones.map((zone) => (
+              <tr key={zone.name}>
+                <td className="py-2 font-medium">{zone.name}</td>
+                <td className="py-2 text-right">{display(zone.tokens)}</td>
+                <td className="py-2 text-right">{display(zone.items)}</td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td className="py-3 text-slate-500" colSpan={3}>
+                No zone breakdown reported.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ContextQualityPanel({ quality }: { quality: RetrievalQuality }) {
+  const qualityRows: Array<[string, unknown]> = [
+    ["Mode", quality.mode],
+    ["Memory MCP", quality.memory_mcp_version],
+    ["Latency", ms(quality.latency_ms)],
+    ["Top score", score(quality.top_score)],
+    ["Coverage", pct(quality.coverage_ratio ?? undefined)],
+    ["Unique sources", quality.unique_source_count],
+  ];
+  const graphRows: Array<[string, unknown]> = [
+    ["Seeds", quality.seed_count],
+    ["Neighbours", quality.neighbour_count],
+    ["Final chunks", quality.final_count],
+    ["Chunks used", quality.chunks_used],
+    ["Chunks offered", quality.chunks_offered],
+  ];
+  return (
+    <div className="border-t border-slate-200 p-4 dark:border-slate-800">
+      <div className="grid gap-4 md:grid-cols-[0.85fr_1fr]">
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">Context Quality</h3>
+          <dl className="divide-y divide-slate-200 text-sm dark:divide-slate-800">
+            {qualityRows.map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between gap-3 py-2">
+                <dt className="text-slate-500">{label}</dt>
+                <dd className="font-medium">{display(value)}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-3 text-xs leading-5 text-slate-500">
+            Quality here means observable retrieval health: source coverage, score, graph expansion,
+            and latency. It does not expose raw prompt text.
+          </p>
+        </div>
+        <div>
+          <h3 className="mb-2 text-sm font-semibold">Graph Expansion</h3>
+          <dl className="grid grid-cols-2 gap-2 text-sm">
+            {graphRows.map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded border border-slate-200 p-3 dark:border-slate-800"
+              >
+                <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
+                <dd className="mt-1 text-lg font-semibold">{display(value)}</dd>
+              </div>
+            ))}
+          </dl>
+          <SourceList sources={quality.sources} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SourceList({ sources }: { sources: string[] }) {
+  return (
+    <div className="mt-4">
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        Sources
+      </h4>
+      {sources.length ? (
+        <ul className="max-h-52 space-y-1 overflow-auto text-xs leading-5 text-slate-600 dark:text-slate-400">
+          {sources.map((source) => (
+            <li key={source} className="truncate" title={source}>
+              {source}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-slate-500">No source list reported.</p>
+      )}
     </div>
   );
 }
@@ -484,6 +581,53 @@ function normalizeCompression(report: Record<string, unknown>): CompressionRow[]
   return [];
 }
 
+function normalizeZones(report: Record<string, unknown>) {
+  const zones = report.zones;
+  if (!Array.isArray(zones)) return [];
+  return zones.map((zone) => {
+    const row = asRecord(zone);
+    return {
+      name: String(row.zone ?? row.name ?? row.id ?? "unknown"),
+      tokens: row.tokens ?? row.tokens_in_total ?? row.token_count,
+      items: row.items ?? row.count ?? row.item_count,
+    };
+  });
+}
+
+function summarizeRetrieval(report: Record<string, unknown>): RetrievalQuality {
+  const retrieval = asRecord(report.retrieval);
+  const sources = normalizeSources(retrieval.sources);
+  const chunksOffered = numberValue(retrieval.chunks_offered);
+  const chunksUsed = numberValue(retrieval.chunks_used);
+  return {
+    mode: stringValue(retrieval.mode) ?? "unknown",
+    memory_mcp_version: stringValue(retrieval.memory_mcp_version) ?? undefined,
+    latency_ms: numberValue(retrieval.latency_ms) ?? undefined,
+    top_score: numberValue(retrieval.top_score) ?? undefined,
+    chunks_offered: chunksOffered ?? undefined,
+    chunks_used: chunksUsed ?? undefined,
+    final_count: numberValue(retrieval.final_count) ?? undefined,
+    seed_count: numberValue(retrieval.seed_count) ?? undefined,
+    neighbour_count: numberValue(retrieval.neighbour_count) ?? undefined,
+    coverage_ratio:
+      chunksOffered && chunksUsed !== undefined ? Number((chunksUsed / chunksOffered).toFixed(6)) : null,
+    unique_source_count: new Set(sources).size,
+    source_count: sources.length,
+    sources: [...new Set(sources)].slice(0, 20),
+  };
+}
+
+function normalizeSources(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item;
+      const row = asRecord(item);
+      return stringValue(row.path) ?? stringValue(row.source) ?? stringValue(row.uri) ?? stringValue(row.vault_path);
+    })
+    .filter((source): source is string => Boolean(source));
+}
+
 function summarizeContext(report: Record<string, unknown>) {
   const compressionRows = normalizeCompression(report);
   const compressibleBefore = sumNumbers(compressionRows.map((row) => row.before));
@@ -541,6 +685,17 @@ function pick(record: Record<string, unknown>, keys: string[]) {
   }
   return undefined;
 }
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" ? value : undefined;
+}
+
 function display(value: unknown) {
   if (value === undefined || value === null || value === "") return "—";
   if (typeof value === "number") return Number.isInteger(value) ? value.toString() : value.toFixed(3);
@@ -550,6 +705,16 @@ function display(value: unknown) {
 function pct(value?: number) {
   if (value === undefined) return "—";
   return `${Math.round(value * 100)}%`;
+}
+
+function ms(value?: number) {
+  if (value === undefined) return "—";
+  return `${Math.round(value)} ms`;
+}
+
+function score(value?: number) {
+  if (value === undefined) return "—";
+  return value.toFixed(3);
 }
 
 function pctNumber(value?: number) {

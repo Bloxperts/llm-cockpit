@@ -52,6 +52,7 @@ class ConductorSnapshot:
         if not raw.strip():
             raise ConductorReadError("context_report_empty")
         report = json.loads(raw)
+        quality = _context_quality(report)
         return {
             "reachable": True,
             "surface": self.surface_name,
@@ -61,6 +62,7 @@ class ConductorSnapshot:
             },
             "updated_at": datetime.now(UTC).isoformat(),
             "report": report,
+            "quality": quality,
         }
 
     def manifest_detail(self, manifest_id: str) -> dict[str, Any]:
@@ -230,3 +232,54 @@ def _retrieval_mode_mix(manifests: tuple[dict[str, Any], ...]) -> dict[str, int]
 
 def _realised(item: dict[str, Any]) -> dict[str, Any]:
     return item.get("realised") or {}
+
+
+def _context_quality(report: dict[str, Any]) -> dict[str, Any]:
+    retrieval = _object(report.get("retrieval"))
+    sources = retrieval.get("sources")
+    source_rows = sources if isinstance(sources, list) else []
+    source_paths = [
+        path
+        for path in (_source_path(row) for row in source_rows)
+        if path
+    ]
+    unique_sources = sorted(set(source_paths))
+    chunks_offered = _number(retrieval.get("chunks_offered"))
+    chunks_used = _number(retrieval.get("chunks_used"))
+    final_count = _number(retrieval.get("final_count"))
+    seed_count = _number(retrieval.get("seed_count"))
+    neighbour_count = _number(retrieval.get("neighbour_count"))
+    return {
+        "mode": retrieval.get("mode") or "unknown",
+        "memory_mcp_version": retrieval.get("memory_mcp_version"),
+        "latency_ms": retrieval.get("latency_ms"),
+        "top_score": retrieval.get("top_score"),
+        "chunks_offered": chunks_offered,
+        "chunks_used": chunks_used,
+        "final_count": final_count,
+        "seed_count": seed_count,
+        "neighbour_count": neighbour_count,
+        "coverage_ratio": round(chunks_used / chunks_offered, 6)
+        if chunks_offered and chunks_used is not None
+        else None,
+        "unique_source_count": len(unique_sources),
+        "source_count": len(source_paths),
+        "sources": unique_sources[:20],
+    }
+
+
+def _object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _number(value: Any) -> int | float | None:
+    return value if isinstance(value, int | float) else None
+
+
+def _source_path(row: Any) -> str | None:
+    if isinstance(row, str):
+        return row
+    if not isinstance(row, dict):
+        return None
+    path = row.get("path") or row.get("source") or row.get("uri") or row.get("vault_path")
+    return path if isinstance(path, str) and path else None

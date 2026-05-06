@@ -84,6 +84,21 @@ export type ConductorContextReport = {
   updated_at: string;
   error?: string;
   report?: Record<string, unknown>;
+  quality?: {
+    mode: string;
+    memory_mcp_version?: string;
+    latency_ms?: number;
+    top_score?: number;
+    chunks_offered?: number;
+    chunks_used?: number;
+    final_count?: number;
+    seed_count?: number;
+    neighbour_count?: number;
+    coverage_ratio?: number | null;
+    unique_source_count: number;
+    source_count: number;
+    sources: string[];
+  };
 };
 
 export async function getConductorOverview(): Promise<ConductorOverview> {
