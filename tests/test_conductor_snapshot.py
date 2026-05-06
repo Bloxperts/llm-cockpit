@@ -13,6 +13,10 @@ MANIFEST_JSONL = """
 {"id":"man_2","request_id":"req_2","session_id":"sess_1","agent":"codex","at":"2026-05-05T10:01:00Z","adapter":"shadow-template","realised":{"tokens_in_total":12,"tokens_out":7,"cost_usd":0.0,"retrieval":{"mode":"agentic"}},"outcome":{"status":"failed","fallback_taken":"upgrade"},"extras":{"tier":"reasoning","routing":{"node_chosen":"cortex"},"capability":"deep_reasoning","runtime_mode":"shadow"}}
 """.strip()
 
+CONTEXT_REPORT = """
+{"retrieval":{"mode":"graph","memory_mcp_version":"0.5.1","latency_ms":2193.887,"top_score":0.5985073,"chunks_offered":8,"chunks_used":8,"final_count":8,"seed_count":3,"neighbour_count":5,"sources":[{"path":"020 Projects/AgenticBlox/MCPs/memory.md"},{"path":"020 Projects/AgenticBlox/MCPs/memory.md"},{"path":"020 Projects/AgenticBlox/architecture/MEMORY-SYSTEM.md"}]},"zones":[{"name":"retrieval","tokens":336,"items":8}],"context_before_build":{"tokens_in_total":336},"context_after_build":{"tokens_in_total":336}}
+""".strip()
+
 
 def test_overview_aggregates_remote_manifest(monkeypatch: pytest.MonkeyPatch):
     def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -60,6 +64,33 @@ def test_manifest_detail_returns_full_record(monkeypatch: pytest.MonkeyPatch):
     assert data["reachable"] is True
     assert data["manifest"]["id"] == "man_1"
     assert data["manifest"]["realised"]["retrieval"]["mode"] == "classic"
+
+
+def test_context_report_adds_graph_quality_summary(monkeypatch: pytest.MonkeyPatch):
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=CONTEXT_REPORT, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    snapshot = ConductorSnapshot(
+        ConductorPaths(
+            ssh_host="bloxperts@cortex",
+            manifest_path="/var/lib/agentic-blox/conductor/manifests.jsonl",
+            context_report_path="/var/lib/agentic-blox/conductor/report.json",
+        )
+    )
+    data = snapshot.context_report()
+
+    assert data["reachable"] is True
+    assert data["report"]["retrieval"]["mode"] == "graph"
+    assert data["quality"]["mode"] == "graph"
+    assert data["quality"]["memory_mcp_version"] == "0.5.1"
+    assert data["quality"]["coverage_ratio"] == 1.0
+    assert data["quality"]["unique_source_count"] == 2
+    assert data["quality"]["sources"] == [
+        "020 Projects/AgenticBlox/MCPs/memory.md",
+        "020 Projects/AgenticBlox/architecture/MEMORY-SYSTEM.md",
+    ]
 
 
 def test_ssh_failure_is_explicit(monkeypatch: pytest.MonkeyPatch):
