@@ -76,10 +76,10 @@ class Settings(BaseSettings):
     # in config.toml.
     code_files_dir: Path | None = None
 
-    # Conductor shadow dashboard. Read-only and degraded by default rather
-    # than blocking the cockpit when Cortex-side shadow files are absent.
-    conductor_enabled: bool = True
-    conductor_ssh_host: str = "bloxperts@cortex"
+    # Retired Conductor observer. Disabled by default so archived Cockpit
+    # checkouts do not probe retired runtime hosts.
+    conductor_enabled: bool = False
+    conductor_ssh_host: str = ""
     conductor_manifest_path: str = "/var/lib/agentic-blox/conductor/manifests.jsonl"
     conductor_context_report_path: str = "/var/lib/agentic-blox/conductor/context-report.json"
     conductor_ssh_timeout_seconds: int = 5
