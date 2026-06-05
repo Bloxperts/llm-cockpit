@@ -18,7 +18,7 @@ The cockpit needs to be opinionated about its own implementation stack so that:
 
 ### Delivery form (DG-003 verdict — recorded once)
 
-**Web service.** Concretely: a FastAPI backend serving a Next.js frontend at `http://192.168.111.200:8080` on the LAN.
+**Web service.** Concretely: a FastAPI backend serving a Next.js frontend at `http://neuroforge.home.arpa:8080` on the LAN.
 
 DG-003 was implicitly run when Chris scoped the project (cockpit GOALS.md §primary goals). Verdict: a CLI is insufficient for non-engineering family members; an agent is overkill (the user is the operator); a single web service is the minimum viable form. This decision is **not re-run per spec.** All seven v0.1 user stories share this delivery form.
 

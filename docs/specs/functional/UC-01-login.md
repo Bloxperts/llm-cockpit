@@ -10,7 +10,7 @@
 
 ## Goal
 
-A family member or tester opens `http://192.168.111.200:8080` from a browser on the LAN, sees a login form, types username + password, and lands on the dashboard.
+A family member or tester opens `http://neuroforge.home.arpa:8080` from a browser on the LAN, sees a login form, types username + password, and lands on the dashboard.
 
 ## Functional requirements
 
