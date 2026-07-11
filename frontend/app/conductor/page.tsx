@@ -136,7 +136,7 @@ export default function ConductorPage() {
           </Link>
           <h1 className="text-2xl font-semibold">Conductor</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Cortex shadow telemetry, context visibility, and manifest coverage.
+            Retired observer for historical shadow telemetry and manifest coverage.
           </p>
         </div>
         <Status reachable={overview.reachable && contextReport.reachable} />
@@ -144,7 +144,7 @@ export default function ConductorPage() {
 
       {(!overview.reachable || !contextReport.reachable) && (
         <section className="mb-5 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
-          Cortex read is degraded. Overview: {overview.error ?? "ok"}. Context report:{" "}
+          Conductor observer is retired or degraded. Overview: {overview.error ?? "ok"}. Context report:{" "}
           {contextReport.error ?? "ok"}.
         </section>
       )}
@@ -299,7 +299,7 @@ function Status({ reachable }: { reachable: boolean }) {
           : "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-100",
       ].join(" ")}
     >
-      {reachable ? "Cortex connected" : "Degraded"}
+      {reachable ? "Historical data reachable" : "Retired"}
     </span>
   );
 }
